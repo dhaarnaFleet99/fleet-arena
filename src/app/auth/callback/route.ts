@@ -16,13 +16,15 @@ export async function GET(request: NextRequest) {
     if (user?.id) {
       const INTERNAL_DOMAIN = process.env.INTERNAL_EMAIL_DOMAIN ?? "fleet.so";
       const service = createServiceClient();
-      await service.from("profiles").upsert({
-        id: user.id,
-        email: user.email ?? "",
-        is_internal: user.email?.endsWith("@" + INTERNAL_DOMAIN) ?? false,
-        first_seen_at: new Date().toISOString(),
-        last_seen_at: new Date().toISOString(),
-      }, { onConflict: "id", ignoreDuplicates: true }).catch(() => {});
+      try {
+        await service.from("profiles").upsert({
+          id: user.id,
+          email: user.email ?? "",
+          is_internal: user.email?.endsWith("@" + INTERNAL_DOMAIN) ?? false,
+          first_seen_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString(),
+        }, { onConflict: "id", ignoreDuplicates: true });
+      } catch { /* ignore */ }
     }
   }
 
