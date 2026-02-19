@@ -109,20 +109,10 @@ Leave `.env.local` open — you'll fill it in during Steps 4 and 5.
 3. Save your database password somewhere safe
 
 ### 4b. Run the schema
-**Option A — SQL Editor (dashboard)**  
-1. In your Supabase project, go to **SQL Editor**
-2. Open `supabase/schema.sql` from this repo
+1. In your Supabase project, go to **SQL Editor**: https://supabase.com/dashboard/project/atmglymhyjtlxipwbdbq/sql/new
+2. Open `supabase/schema.sql` from this repo (or use `supabase/migrations/20250219120000_initial_schema.sql` — same content)
 3. Paste the entire file into the editor and click **Run**
-4. You should see all tables created with no errors
-
-**Option B — psql (terminal)**  
-From **Project Settings → Database** copy the **Connection string** (URI, e.g. `postgresql://postgres.[ref]:[YOUR-PASSWORD]@...pooler.supabase.com:5432/postgres`). Then:
-
-```bash
-psql "YOUR_CONNECTION_STRING" -f supabase/schema.sql
-```
-
-You should see `CREATE TABLE` and `CREATE POLICY` lines with no errors.
+4. You should see all tables created with no errors (idempotent: safe to run again)
 
 ### 4c. Enable Email Auth
 1. Go to **Authentication → Providers**
@@ -132,11 +122,11 @@ You should see `CREATE TABLE` and `CREATE POLICY` lines with no errors.
 
 ### 4d. Get your keys
 Go to **Project Settings → API**. Copy:
-- **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
-- **anon public** key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- **service_role** key → `SUPABASE_SERVICE_ROLE_KEY`
+- `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
+- `anon public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `service_role` key → `SUPABASE_SERVICE_ROLE_KEY`
 
-Add these to your `.env.local`.
+Paste these into your `.env.local`.
 
 ---
 

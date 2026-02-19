@@ -1,17 +1,50 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
-import { Send, RotateCcw } from "lucide-react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { Send, RotateCcw, LogIn } from "lucide-react";
 import { MODELS, getModel } from "@/lib/models";
 import type { Turn, ResponseCard, Session } from "@/types";
 import ResponseCardComponent from "@/components/ResponseCard";
 import RankingBar from "@/components/RankingBar";
 import ModelSelector from "@/components/ModelSelector";
+import Link from "next/link";
 
-export default function ArenaClient() {
+const STORAGE_KEY = "arena_active_session";
+const SLOTS = ["A", "B", "C", "D", "E", "F", "G", "H"];
+
+function buildTurnsFromDB(
+  dbTurns: any[], responses: any[], rankings: any[], modelIds: string[]
+): Turn[] {
+  return dbTurns
+    .sort((a: any, b: any) => a.turn_number - b.turn_number)
+    .map((turn: any) => {
+      const turnResponses = responses.filter((r: any) => r.turn_id === turn.id);
+      const turnRankings = rankings.filter((rk: any) => rk.turn_id === turn.id);
+      const responseCards: ResponseCard[] = turnResponses
+        .map((r: any) => {
+          const slotLabel = SLOTS[modelIds.indexOf(r.model_id)] ?? "?";
+          return {
+            id: r.id, slotLabel, content: r.content ?? "", streaming: false,
+            finishReason: r.finish_reason,
+            ...(turn.ranking_submitted ? { modelId: r.model_id, model: getModel(r.model_id) } : {}),
+          };
+        })
+        .sort((a: any, b: any) => SLOTS.indexOf(a.slotLabel) - SLOTS.indexOf(b.slotLabel));
+      const rankingMap: Record<string, number> = {};
+      for (const rk of turnRankings) {
+        const resp = turnResponses.find((r: any) => r.id === rk.response_id);
+        if (resp) { const sl = SLOTS[modelIds.indexOf(resp.model_id)]; if (sl) rankingMap[sl] = rk.rank; }
+      }
+      return { id: turn.id, turnNumber: turn.turn_number, prompt: turn.prompt, responses: responseCards, rankings: rankingMap, rankingSubmitted: turn.ranking_submitted ?? false, rankingSkipped: false };
+    });
+}
+
+type Props = { userId: string | null };
+
+export default function ArenaClient({ userId }: Props) {
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([
-    "anthropic/claude-opus-4-5",
-    "openai/gpt-4o",
+    "anthropic/claude-sonnet-4.6",
+    "openai/gpt-4.1",
   ]);
   const [session, setSession] = useState<Session | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -19,8 +52,44 @@ export default function ArenaClient() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [phase, setPhase] = useState<"config" | "session">("config");
-
+  const [resuming, setResuming] = useState(true);
   const textRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── Restore session from localStorage on mount ─────────────────────────────
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) { setResuming(false); return; }
+    try {
+      const { sessionId, modelIds } = JSON.parse(saved) as { sessionId: string; modelIds: string[] };
+      fetch(`/api/sessions/resume?sessionId=${sessionId}`)
+        .then(r => r.json())
+        .then(({ session: s, turns: dbTurns, responses, rankings }) => {
+          if (!s || s.is_complete) { localStorage.removeItem(STORAGE_KEY); return; }
+          const rebuilt = buildTurnsFromDB(dbTurns ?? [], responses ?? [], rankings ?? [], modelIds);
+          setSession({ id: s.id, modelIds, turns: [], isComplete: false });
+          setSelectedModelIds(modelIds);
+          setTurns(rebuilt);
+          setActiveTurnIdx(Math.max(0, rebuilt.length - 1));
+          setPhase("session");
+        })
+        .catch(() => localStorage.removeItem(STORAGE_KEY))
+        .finally(() => setResuming(false));
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+      setResuming(false);
+    }
+  }, []);
+
+  // ── Send beacon on tab/window close to mark session complete ───────────────
+  useEffect(() => {
+    if (!session) return;
+    const onUnload = () => {
+      navigator.sendBeacon("/api/sessions/complete", new Blob([JSON.stringify({ sessionId: session.id })], { type: "application/json" }));
+      localStorage.removeItem(STORAGE_KEY);
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [session]);
 
   // ── Start session ──────────────────────────────────────────────────────────
   const startSession = useCallback(async () => {
@@ -29,20 +98,46 @@ export default function ArenaClient() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ modelIds: selectedModelIds }),
     });
-    const { sessionId } = await res.json();
+    const { sessionId, error } = await res.json();
+    if (error) { alert("Error creating session: " + error); return; }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionId, modelIds: selectedModelIds }));
     setSession({ id: sessionId, modelIds: selectedModelIds, turns: [], isComplete: false });
     setTurns([]);
     setPhase("session");
     setTimeout(() => textRef.current?.focus(), 50);
   }, [selectedModelIds]);
 
+  // ── Build conversation history for multi-turn context ──────────────────────
+  // Each model in each slot gets the SAME conversation history.
+  // For prior turns, we use the #1 ranked response as the canonical assistant reply.
+  // If no ranking, we use slot A.
+  const buildMessages = useCallback((currentPrompt: string, priorTurns: Turn[]) => {
+    const messages: { role: string; content: string }[] = [];
+    for (const t of priorTurns) {
+      messages.push({ role: "user", content: t.prompt });
+      // Best response = lowest rank number (rankings keyed by slotLabel), fallback to slot A
+      const ranked = [...t.responses]
+        .filter(r => !r.streaming)
+        .sort((a, b) => {
+          const ra = t.rankings[a.slotLabel] ?? 999;
+          const rb = t.rankings[b.slotLabel] ?? 999;
+          return ra - rb;
+        });
+      const best = ranked[0] ?? t.responses.find(r => r.slotLabel === "A");
+      if (best?.content) {
+        messages.push({ role: "assistant", content: best.content });
+      }
+    }
+    messages.push({ role: "user", content: currentPrompt });
+    return messages;
+  }, []);
+
   // ── Submit prompt ──────────────────────────────────────────────────────────
   const submitPrompt = useCallback(async () => {
     if (!prompt.trim() || !session || loading) return;
-
-    // Block new turn if previous turn is not ranked (and it's not the first turn)
     const prevTurn = turns[turns.length - 1];
-    if (prevTurn && !prevTurn.rankingSubmitted) return;
+    // Block if prev turn exists and has no ranking submitted AND user hasn't explicitly skipped
+    if (prevTurn && !prevTurn.rankingSubmitted && !prevTurn.rankingSkipped) return;
 
     setLoading(true);
     const turnNumber = turns.length + 1;
@@ -57,11 +152,10 @@ export default function ArenaClient() {
     });
     const { turnId } = await turnRes.json();
 
-    // 2. Init turn state with streaming placeholders
-    const slotLabels = ["A", "B", "C"];
+    // 2. Init placeholder state
     const initResponses: ResponseCard[] = session.modelIds.map((_, i) => ({
       id: "",
-      slotLabel: slotLabels[i],
+      slotLabel: SLOTS[i],
       content: "",
       streaming: true,
     }));
@@ -73,33 +167,26 @@ export default function ArenaClient() {
       responses: initResponses,
       rankings: {},
       rankingSubmitted: false,
+      rankingSkipped: false,
     };
 
-    setTurns((prev) => {
-      const updated = [...prev, newTurn];
-      setActiveTurnIdx(updated.length - 1);
-      return updated;
-    });
+    const newTurns = [...turns, newTurn];
+    setTurns(newTurns);
+    setActiveTurnIdx(newTurns.length - 1);
 
-    // 3. Build message history for context (prior turns)
-    const messages: { role: string; content: string }[] = [];
-    turns.forEach((t) => {
-      messages.push({ role: "user", content: t.prompt });
-      // Use slot A's response as the "assistant" context for multi-turn
-      // (all models see same conversation context)
-      const slotA = t.responses.find((r) => r.slotLabel === "A");
-      if (slotA?.content) messages.push({ role: "assistant", content: slotA.content });
-    });
-    messages.push({ role: "user", content: currentPrompt });
+    // 3. Build full conversation history
+    const messages = buildMessages(currentPrompt, turns);
 
-    // 4. Stream from OpenRouter
+    // 4. Stream
     const streamRes = await fetch("/api/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: session.id, turnId, modelIds: session.modelIds, messages }),
     });
 
-    const reader = streamRes.body!.getReader();
+    if (!streamRes.ok || !streamRes.body) { setLoading(false); return; }
+
+    const reader = streamRes.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
 
@@ -114,31 +201,35 @@ export default function ArenaClient() {
         if (!line.startsWith("data: ")) continue;
         try {
           const ev = JSON.parse(line.slice(6));
-
           if (ev.type === "delta") {
-            setTurns((prev) => prev.map((t, i) =>
-              i === activeTurnIdx || t.id === turnId
-                ? {
-                    ...t,
-                    responses: t.responses.map((r) =>
-                      r.slotLabel === ev.slotLabel ? { ...r, content: r.content + ev.delta } : r
-                    ),
-                  }
+            setTurns(prev => prev.map(t =>
+              t.id === turnId
+                ? { ...t, responses: t.responses.map(r =>
+                    r.slotLabel === ev.slotLabel ? { ...r, content: r.content + ev.delta } : r
+                  )}
                 : t
             ));
           }
-
           if (ev.type === "done") {
-            setTurns((prev) => prev.map((t) =>
+            setTurns(prev => prev.map(t =>
               t.id === turnId
-                ? {
-                    ...t,
-                    responses: t.responses.map((r) =>
-                      r.slotLabel === ev.slotLabel
-                        ? { ...r, id: ev.responseId, streaming: false, finishReason: ev.finishReason }
-                        : r
-                    ),
-                  }
+                ? { ...t, responses: t.responses.map(r =>
+                    r.slotLabel === ev.slotLabel
+                      ? { ...r, id: ev.responseId, streaming: false, finishReason: ev.finishReason }
+                      : r
+                  )}
+                : t
+            ));
+          }
+          if (ev.type === "error") {
+            // Keep id:"" so the ranking bar excludes this response (avoids id collision)
+            setTurns(prev => prev.map(t =>
+              t.id === turnId
+                ? { ...t, responses: t.responses.map(r =>
+                    r.slotLabel === ev.slotLabel
+                      ? { ...r, streaming: false, content: r.content || "[Error: model unavailable]" }
+                      : r
+                  )}
                 : t
             ));
           }
@@ -146,60 +237,85 @@ export default function ArenaClient() {
       }
     }
 
+    // Force-finish any responses still streaming after stream closes (keep id:"" so they're excluded from ranking)
+    setTurns(prev => prev.map(t =>
+      t.id === turnId
+        ? { ...t, responses: t.responses.map(r =>
+            r.streaming ? { ...r, streaming: false } : r
+          )}
+        : t
+    ));
     setLoading(false);
-  }, [prompt, session, loading, turns, activeTurnIdx]);
+  }, [prompt, session, loading, turns, buildMessages]);
 
   // ── Submit ranking ─────────────────────────────────────────────────────────
+  // `rankings` is keyed by slotLabel ("A"/"B"/"C") from RankingBar
+  // The API resolves slotLabel → response_id server-side (reliable, non-edge)
   const submitRanking = useCallback(async (turnId: string, rankings: Record<string, number>) => {
-    const turn = turns.find((t) => t.id === turnId);
-    if (!turn || !session) return;
+    if (!session) return;
 
-    const payload = Object.entries(rankings).map(([responseId, rank]) => ({ responseId, rank }));
+    const payload = Object.entries(rankings).map(([slotLabel, rank]) => ({ slotLabel, rank }));
 
-    const res = await fetch("/api/rankings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: session.id, turnId, rankings: payload }),
-    });
-    const { revealed } = await res.json() as { revealed: { id: string; model_id: string }[] };
+    let revealed: { id: string; model_id: string; slot_label: string }[] = [];
+    try {
+      const res = await fetch("/api/rankings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id, turnId, rankings: payload }),
+      });
+      const data = await res.json() as { revealed?: typeof revealed };
+      revealed = data.revealed ?? [];
+    } catch {}
 
-    // Reveal model identities
-    setTurns((prev) => prev.map((t) =>
+    // Fallback reveal: use session model order (Slot A = modelIds[0], etc.)
+    const slotLabels = ["A", "B", "C"];
+    const fallbackRevealed = session.modelIds.map((modelId, i) => ({
+      id: "", model_id: modelId, slot_label: slotLabels[i],
+    }));
+    const finalRevealed = revealed.length > 0 ? revealed : fallbackRevealed;
+
+    setTurns(prev => prev.map(t =>
       t.id === turnId
         ? {
-            ...t,
-            rankings,
-            rankingSubmitted: true,
-            responses: t.responses.map((r) => {
-              const rev = revealed.find((x) => x.id === r.id);
+            ...t, rankings, rankingSubmitted: true,
+            responses: t.responses.map(r => {
+              // Match by slot_label (robust even when r.id is missing)
+              const rev = finalRevealed.find(x => x.slot_label === r.slotLabel);
               if (!rev) return r;
               return { ...r, modelId: rev.model_id, model: getModel(rev.model_id) };
             }),
           }
         : t
     ));
-  }, [turns, session]);
+  }, [session, turns]);
 
-  // ── Reset ──────────────────────────────────────────────────────────────────
-  const reset = useCallback(async () => {
-    if (session) {
-      await fetch("/api/sessions", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.id }),
-      });
-    }
+  // ── Skip ranking ───────────────────────────────────────────────────────────
+  const skipRanking = useCallback((turnId: string) => {
+    setTurns(prev => prev.map(t =>
+      t.id === turnId ? { ...t, rankingSkipped: true } : t
+    ));
+  }, []);
+
+  // ── End session ────────────────────────────────────────────────────────────
+  const endSession = useCallback(async () => {
+    if (!session) return;
+    localStorage.removeItem(STORAGE_KEY);
+    await fetch("/api/sessions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: session.id }),
+    });
     setSession(null);
     setTurns([]);
     setPhase("config");
     setPrompt("");
   }, [session]);
 
-  const activeTurn = turns[activeTurnIdx];
   const lastTurn = turns[turns.length - 1];
-  const canSubmit = !loading && prompt.trim().length > 0 && (!lastTurn || lastTurn.rankingSubmitted);
+  const canSubmit = !loading && prompt.trim().length > 0 &&
+    (!lastTurn || lastTurn.rankingSubmitted || lastTurn.rankingSkipped);
+  const blocked = !!lastTurn && !lastTurn.rankingSubmitted && !lastTurn.rankingSkipped;
 
-  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Topbar */}
@@ -214,24 +330,29 @@ export default function ArenaClient() {
             <span style={{ color: "var(--muted)", fontSize: 12 }}>
               {turns.length} turn{turns.length !== 1 ? "s" : ""}
             </span>
-            <button
-              onClick={reset}
-              style={{
-                marginLeft: "auto", display: "flex", alignItems: "center", gap: 6,
-                background: "transparent", border: "1px solid var(--border)",
-                color: "var(--muted)", borderRadius: 8, padding: "6px 12px",
-                cursor: "pointer", fontSize: 12, fontFamily: "inherit",
-              }}
-            >
-              <RotateCcw size={13} /> New Session
-            </button>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              <button onClick={endSession} style={ghostBtn}>
+                <RotateCcw size={13} /> End Session
+              </button>
+            </div>
           </>
+        )}
+        {!userId && phase === "config" && (
+          <Link href="/login" style={{ marginLeft: "auto", textDecoration: "none" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>
+              <LogIn size={13} /> Sign in to save sessions
+            </div>
+          </Link>
         )}
       </div>
 
       {/* Body */}
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-        {phase === "config" ? (
+        {resuming ? (
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)", fontSize: 13 }}>
+            Resuming session…
+          </div>
+        ) : phase === "config" ? (
           <ConfigScreen
             selectedModelIds={selectedModelIds}
             setSelectedModelIds={setSelectedModelIds}
@@ -242,22 +363,24 @@ export default function ArenaClient() {
             turns={turns}
             activeTurnIdx={activeTurnIdx}
             setActiveTurnIdx={setActiveTurnIdx}
-            activeTurn={activeTurn}
-            onSubmitRanking={submitRanking}
             session={session!}
+            onSubmitRanking={submitRanking}
+            onSkipRanking={skipRanking}
           />
         )}
       </div>
 
-      {/* Prompt bar (only in session) */}
+      {/* Prompt bar */}
       {phase === "session" && (
         <PromptBar
           prompt={prompt}
           setPrompt={setPrompt}
           onSubmit={submitPrompt}
           disabled={!canSubmit}
-          blocked={!!lastTurn && !lastTurn.rankingSubmitted}
+          blocked={blocked}
+          onSkip={() => lastTurn && skipRanking(lastTurn.id)}
           textRef={textRef}
+          loading={loading}
         />
       )}
     </div>
@@ -266,37 +389,29 @@ export default function ArenaClient() {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function ConfigScreen({
-  selectedModelIds, setSelectedModelIds, onStart,
-}: {
+function ConfigScreen({ selectedModelIds, setSelectedModelIds, onStart }: {
   selectedModelIds: string[];
   setSelectedModelIds: (ids: string[]) => void;
   onStart: () => void;
 }) {
   return (
-    <div style={{
-      flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-      padding: 40,
-    }}>
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
       <div style={{ maxWidth: 560, width: "100%" }}>
-        <div style={{ marginBottom: 8, fontSize: 24, fontWeight: 800, letterSpacing: "-0.5px" }}>
+        <div style={{ marginBottom: 6, fontSize: 24, fontWeight: 800, letterSpacing: "-0.5px" }}>
           Pick your models
         </div>
         <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 32 }}>
-          Select 2–3 models to compare. Identities are hidden until you rank each turn.
+          Select 2–3 models. Identities stay hidden until you rank each turn.
         </div>
         <ModelSelector selected={selectedModelIds} onChange={setSelectedModelIds} />
-        <button
-          onClick={onStart}
-          disabled={selectedModelIds.length < 2}
-          style={{
-            marginTop: 28, width: "100%", padding: "13px",
-            background: selectedModelIds.length < 2 ? "rgba(79,142,247,0.3)" : "var(--accent)",
-            color: "#fff", border: "none", borderRadius: 10,
-            fontSize: 14, fontWeight: 700, cursor: selectedModelIds.length < 2 ? "not-allowed" : "pointer",
-            fontFamily: "inherit", transition: "background 0.15s",
-          }}
-        >
+        <button onClick={onStart} disabled={selectedModelIds.length < 2} style={{
+          marginTop: 28, width: "100%", padding: "13px",
+          background: selectedModelIds.length < 2 ? "rgba(79,142,247,0.25)" : "var(--accent)",
+          color: selectedModelIds.length < 2 ? "rgba(255,255,255,0.3)" : "#fff",
+          border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700,
+          cursor: selectedModelIds.length < 2 ? "not-allowed" : "pointer",
+          fontFamily: "inherit",
+        }}>
           Start Session →
         </button>
       </div>
@@ -304,19 +419,15 @@ function ConfigScreen({
   );
 }
 
-function SessionScreen({
-  turns, activeTurnIdx, setActiveTurnIdx, activeTurn, onSubmitRanking, session,
-}: {
+function SessionScreen({ turns, activeTurnIdx, setActiveTurnIdx, session, onSubmitRanking, onSkipRanking }: {
   turns: Turn[];
   activeTurnIdx: number;
   setActiveTurnIdx: (i: number) => void;
-  activeTurn: Turn | undefined;
-  onSubmitRanking: (turnId: string, rankings: Record<string, number>) => void;
   session: Session;
+  onSubmitRanking: (turnId: string, rankings: Record<string, number>) => void;
+  onSkipRanking: (turnId: string) => void;
 }) {
-  const colClass = session.modelIds.length === 2
-    ? "grid-cols-2"
-    : "grid-cols-3";
+  const activeTurn = turns[activeTurnIdx];
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
@@ -324,23 +435,18 @@ function SessionScreen({
       {turns.length > 1 && (
         <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
           {turns.map((t, i) => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTurnIdx(i)}
-              style={{
-                padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600,
-                border: "1px solid",
-                borderColor: activeTurnIdx === i ? "var(--accent)" : "var(--border)",
-                background: activeTurnIdx === i ? "rgba(79,142,247,0.1)" : "transparent",
-                color: activeTurnIdx === i ? "var(--accent)" : "var(--muted)",
-                cursor: "pointer", fontFamily: "inherit",
-                display: "flex", alignItems: "center", gap: 6,
-              }}
-            >
+            <button key={t.id} onClick={() => setActiveTurnIdx(i)} style={{
+              padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600,
+              border: "1px solid",
+              borderColor: activeTurnIdx === i ? "var(--accent)" : "var(--border)",
+              background: activeTurnIdx === i ? "rgba(79,142,247,0.1)" : "transparent",
+              color: activeTurnIdx === i ? "var(--accent)" : "var(--muted)",
+              cursor: "pointer", fontFamily: "inherit",
+              display: "flex", alignItems: "center", gap: 6,
+            }}>
               Turn {i + 1}
-              {t.rankingSubmitted && (
-                <span style={{ fontSize: 10, color: "var(--success)" }}>✓</span>
-              )}
+              {t.rankingSubmitted && <span style={{ fontSize: 10, color: "var(--success)" }}>✓</span>}
+              {t.rankingSkipped && <span style={{ fontSize: 10, color: "var(--muted)" }}>–</span>}
             </button>
           ))}
         </div>
@@ -348,7 +454,6 @@ function SessionScreen({
 
       {activeTurn ? (
         <>
-          {/* Prompt */}
           <div style={{
             fontSize: 12, color: "var(--muted)", marginBottom: 16,
             fontFamily: "monospace", padding: "10px 14px",
@@ -358,22 +463,20 @@ function SessionScreen({
             {activeTurn.prompt}
           </div>
 
-          {/* Responses grid */}
           <div style={{
             display: "grid",
-            gridTemplateColumns: session.modelIds.length === 2 ? "1fr 1fr" : "1fr 1fr 1fr",
-            gap: 14,
-            marginBottom: 16,
+            gridTemplateColumns: `repeat(${session.modelIds.length <= 3 ? session.modelIds.length : session.modelIds.length <= 4 ? 2 : session.modelIds.length <= 6 ? 3 : 4}, 1fr)`,
+            gap: 14, marginBottom: 16,
           }}>
-            {activeTurn.responses.map((r) => (
+            {activeTurn.responses.map(r => (
               <ResponseCardComponent key={r.slotLabel} response={r} />
             ))}
           </div>
 
-          {/* Ranking bar */}
           <RankingBar
             turn={activeTurn}
-            onSubmit={(rankings) => onSubmitRanking(activeTurn.id, rankings)}
+            onSubmit={rankings => onSubmitRanking(activeTurn.id, rankings)}
+            onSkip={() => onSkipRanking(activeTurn.id)}
           />
         </>
       ) : (
@@ -385,31 +488,22 @@ function SessionScreen({
   );
 }
 
-function PromptBar({
-  prompt, setPrompt, onSubmit, disabled, blocked, textRef,
-}: {
+function PromptBar({ prompt, setPrompt, onSubmit, disabled, blocked, onSkip, textRef, loading }: {
   prompt: string;
   setPrompt: (v: string) => void;
   onSubmit: () => void;
   disabled: boolean;
   blocked: boolean;
+  onSkip: () => void;
   textRef: React.RefObject<HTMLTextAreaElement>;
+  loading: boolean;
 }) {
   return (
-    <div style={{
-      borderTop: "1px solid var(--border)", background: "var(--surface)",
-      padding: "14px 24px",
-    }}>
+    <div style={{ borderTop: "1px solid var(--border)", background: "var(--surface)", padding: "14px 24px" }}>
       {blocked && (
-        <div style={{
-          marginBottom: 10, fontSize: 12, color: "var(--warn)",
-          display: "flex", alignItems: "center", gap: 6,
-        }}>
-          ⚠ Rank the responses above before continuing — or skip by pressing ↓
-          <button
-            onClick={() => {/* allow without ranking — just flag skip */}}
-            style={{ background: "transparent", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 11, fontFamily: "inherit", textDecoration: "underline" }}
-          >
+        <div style={{ marginBottom: 10, fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 8 }}>
+          Rank the responses above to continue, or{" "}
+          <button onClick={onSkip} style={{ background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "inherit", textDecoration: "underline", padding: 0 }}>
             skip ranking
           </button>
         </div>
@@ -418,13 +512,14 @@ function PromptBar({
         display: "flex", gap: 10, alignItems: "flex-end",
         background: "var(--surface2)", border: "1px solid var(--border-bright)",
         borderRadius: 10, padding: "10px 14px",
+        opacity: blocked ? 0.6 : 1,
       }}>
         <textarea
           ref={textRef}
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); } }}
-          placeholder={blocked ? "Rank the responses above to continue…" : "Ask anything…"}
+          onChange={e => setPrompt(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); } }}
+          placeholder={blocked ? "Rank above to continue…" : "Ask anything… (Enter to send, Shift+Enter for newline)"}
           rows={1}
           style={{
             flex: 1, background: "transparent", border: "none", outline: "none",
@@ -432,20 +527,23 @@ function PromptBar({
             resize: "none", lineHeight: 1.5, maxHeight: 120,
           }}
         />
-        <button
-          onClick={onSubmit}
-          disabled={disabled}
-          style={{
-            background: disabled ? "rgba(79,142,247,0.25)" : "var(--accent)",
-            color: disabled ? "rgba(255,255,255,0.4)" : "#fff",
-            border: "none", borderRadius: 8, padding: "8px 10px",
-            cursor: disabled ? "not-allowed" : "pointer",
-            display: "flex", alignItems: "center", transition: "background 0.15s",
-          }}
-        >
-          <Send size={15} />
+        <button onClick={onSubmit} disabled={disabled} style={{
+          background: disabled ? "rgba(79,142,247,0.2)" : "var(--accent)",
+          color: disabled ? "rgba(255,255,255,0.3)" : "#fff",
+          border: "none", borderRadius: 8, padding: "8px 10px",
+          cursor: disabled ? "not-allowed" : "pointer",
+          display: "flex", alignItems: "center", transition: "background 0.15s",
+        }}>
+          {loading ? <span style={{ fontSize: 13 }}>…</span> : <Send size={15} />}
         </button>
       </div>
     </div>
   );
 }
+
+const ghostBtn: React.CSSProperties = {
+  display: "flex", alignItems: "center", gap: 6,
+  background: "transparent", border: "1px solid var(--border)",
+  color: "var(--muted)", borderRadius: 8, padding: "6px 12px",
+  cursor: "pointer", fontSize: 12, fontFamily: "inherit",
+};

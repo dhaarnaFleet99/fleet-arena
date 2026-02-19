@@ -1,23 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServiceClient } from "@/lib/supabase/server";
+import { createServiceClient, createClient } from "@/lib/supabase/server";
 
 export async function POST(req: NextRequest) {
-  const { modelIds, userId } = await req.json() as { modelIds: string[]; userId?: string };
-
+  const { modelIds } = await req.json() as { modelIds: string[] };
   if (!modelIds || modelIds.length < 2) {
     return NextResponse.json({ error: "Need at least 2 models" }, { status: 400 });
   }
 
-  const supabase = createServiceClient();
+  // Get current user (optional — arena works for authed users only now)
+  const userSupabase = createClient();
+  const { data: { user } } = await userSupabase.auth.getUser();
 
+  const supabase = createServiceClient();
   const { data: session, error } = await supabase
     .from("sessions")
-    .insert({ model_ids: modelIds, user_id: userId ?? null })
+    .insert({ model_ids: modelIds, user_id: user?.id ?? null })
     .select("id")
     .single();
 
   if (error || !session) {
     return NextResponse.json({ error: error?.message }, { status: 500 });
+  }
+
+  // Bump profile session count
+  if (user?.id) {
+    try {
+      await supabase.rpc("increment_profile_sessions", { uid: user.id });
+    } catch {
+      // ignore if RPC missing or fails
+    }
   }
 
   return NextResponse.json({ sessionId: session.id });
@@ -26,6 +37,17 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const { sessionId } = await req.json() as { sessionId: string };
   const supabase = createServiceClient();
-  await supabase.from("sessions").update({ is_complete: true }).eq("id", sessionId);
+  await supabase
+    .from("sessions")
+    .update({ is_complete: true, completed_at: new Date().toISOString() })
+    .eq("id", sessionId);
+
+  // Trigger async analysis
+  fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  }).catch(() => {});
+
   return NextResponse.json({ ok: true });
 }

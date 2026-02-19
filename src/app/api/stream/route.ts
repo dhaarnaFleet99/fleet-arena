@@ -1,8 +1,5 @@
 import { NextRequest } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
-import { getModel } from "@/lib/models";
-
-export const runtime = "edge";
 
 export async function POST(req: NextRequest) {
   const { sessionId, turnId, modelIds, messages } = await req.json() as {
@@ -16,33 +13,47 @@ export async function POST(req: NextRequest) {
     return new Response("Bad Request", { status: 400 });
   }
 
-  const encoder = new TextEncoder();
+  const slotLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
+  // ── Create response rows BEFORE the stream starts ─────────────────────────
+  // Must run in the normal route handler async context. @supabase/ssr can fail
+  // silently when createServiceClient() is called inside a ReadableStream callback,
+  // which would leave the responses table empty and break rankings.
+  const supabase = createServiceClient();
+  const responseIds: Record<string, string> = {};
+  for (let i = 0; i < modelIds.length; i++) {
+    const { data, error } = await supabase
+      .from("responses")
+      .insert({
+        turn_id: turnId,
+        model_id: modelIds[i],
+        // slot_label and session_id omitted — columns missing from live DB schema.
+        // Slot is derived at query-time from model order in session.model_ids.
+        content: "",
+      })
+      .select("id")
+      .single();
+    if (error) {
+      console.error("[stream] response insert failed:", error.message, { modelId: modelIds[i], turnId, sessionId });
+    }
+    if (data) responseIds[modelIds[i]] = data.id;
+  }
+
+  // ── Stream ────────────────────────────────────────────────────────────────
+  const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        controller.enqueue(encoder.encode("data: " + JSON.stringify(data) + "\n\n"));
       };
 
-      // Create a response row per model (without model_id yet — stays blind)
-      const supabase = createServiceClient();
-      const responseIds: Record<string, string> = {};
-      const slotLabels = ["A", "B", "C"];
+      // Separate client instance for updates inside the stream
+      const updateSupabase = createServiceClient();
 
-      for (let i = 0; i < modelIds.length; i++) {
-        const { data } = await supabase
-          .from("responses")
-          .insert({ turn_id: turnId, model_id: modelIds[i], content: "" })
-          .select("id")
-          .single();
-        if (data) responseIds[modelIds[i]] = data.id;
-      }
-
-      // Stream all models in parallel
       const starts: Record<string, number> = {};
-      modelIds.forEach((id) => (starts[id] = Date.now()));
+      modelIds.forEach(id => (starts[id] = Date.now()));
 
-      const fetches = modelIds.map(async (modelId, idx) => {
+      await Promise.all(modelIds.map(async (modelId, idx) => {
         const slotLabel = slotLabels[idx];
         const fullContent: string[] = [];
 
@@ -50,7 +61,7 @@ export async function POST(req: NextRequest) {
           const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+              Authorization: "Bearer " + process.env.OPENROUTER_API_KEY,
               "Content-Type": "application/json",
               "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
               "X-Title": "Fleet Arena",
@@ -64,7 +75,7 @@ export async function POST(req: NextRequest) {
           });
 
           if (!resp.ok || !resp.body) {
-            send({ type: "error", slotLabel, modelId, error: `HTTP ${resp.status}` });
+            send({ type: "error", slotLabel, error: "HTTP " + resp.status });
             return;
           }
 
@@ -74,9 +85,8 @@ export async function POST(req: NextRequest) {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-
             const chunk = decoder.decode(value);
-            const lines = chunk.split("\n").filter((l) => l.startsWith("data: "));
+            const lines = chunk.split("\n").filter(l => l.startsWith("data: "));
 
             for (const line of lines) {
               const raw = line.slice(6);
@@ -92,22 +102,28 @@ export async function POST(req: NextRequest) {
                 if (finishReason) {
                   const content = fullContent.join("");
                   const latency = Date.now() - starts[modelId];
-                  // Update DB row
-                  await supabase
-                    .from("responses")
-                    .update({ content, latency_ms: latency, finish_reason: finishReason, token_count: content.length / 4 | 0 })
-                    .eq("id", responseIds[modelId]);
-                  send({ type: "done", slotLabel, responseId: responseIds[modelId], finishReason });
+                  const responseId = responseIds[modelId];
+                  if (responseId) {
+                    const { error: updateErr } = await updateSupabase.from("responses").update({
+                      content,
+                      latency_ms: latency,
+                      finish_reason: finishReason,
+                      token_count: Math.round(content.length / 4),
+                    }).eq("id", responseId);
+                    if (updateErr) {
+                      console.error("[stream] response update failed:", updateErr.message, { responseId, modelId });
+                    }
+                  }
+                  send({ type: "done", slotLabel, responseId, finishReason });
                 }
               } catch {}
             }
           }
         } catch (err) {
-          send({ type: "error", slotLabel, modelId, error: String(err) });
+          send({ type: "error", slotLabel, error: String(err) });
         }
-      });
+      }));
 
-      await Promise.all(fetches);
       send({ type: "complete", responseIds });
       controller.close();
     },

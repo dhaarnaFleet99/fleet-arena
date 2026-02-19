@@ -10,17 +10,18 @@ export type Turn = {
   id: string;
   turnNumber: number;
   prompt: string;
-  responses: ResponseCard[];     // populated after streaming
-  rankings: Record<string, number>; // responseId -> rank
+  responses: ResponseCard[];
+  rankings: Record<string, number>;   // responseId -> rank
   rankingSubmitted: boolean;
+  rankingSkipped: boolean;
 };
 
 export type ResponseCard = {
   id: string;
-  slotLabel: string;             // "A" | "B" | "C" — shown before reveal
+  slotLabel: string;                  // "A" | "B" | "C" — shown blind until ranked
   content: string;
   streaming: boolean;
-  modelId?: string;              // only populated AFTER ranking submitted
+  modelId?: string;                   // revealed after ranking
   model?: Model;
   latencyMs?: number;
   finishReason?: string;

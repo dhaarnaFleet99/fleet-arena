@@ -16,5 +16,9 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error || !data) return NextResponse.json({ error: error?.message }, { status: 500 });
+
+  // Keep session turn_count in sync so history shows correct count
+  await supabase.from("sessions").update({ turn_count: turnNumber }).eq("id", sessionId);
+
   return NextResponse.json({ turnId: data.id });
 }

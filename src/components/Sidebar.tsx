@@ -1,35 +1,48 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Zap, LayoutDashboard, History, Brain, Download } from "lucide-react";
-import clsx from "clsx";
+import { usePathname, useRouter } from "next/navigation";
+import { Zap, LayoutDashboard, History, Brain, Download, LogIn, LogOut } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
-const NAV = [
-  { href: "/arena",     icon: Zap,             label: "Arena",     internal: false },
-  { href: "/history",   icon: History,         label: "Sessions",  internal: false },
+type NavItem = { href: string; icon: React.ElementType; label: string; badge?: string };
+
+const PUBLIC_NAV: NavItem[] = [
+  { href: "/arena",   icon: Zap,             label: "Arena" },
+  { href: "/history", icon: History,         label: "My Sessions" },
 ];
 
-const INTERNAL_NAV = [
-  { href: "/dashboard",           icon: LayoutDashboard, label: "Analytics" },
-  { href: "/dashboard/behaviors", icon: Brain,           label: "Behaviors" },
-  { href: "/dashboard/export",    icon: Download,        label: "Export" },
+const INTERNAL_NAV: NavItem[] = [
+  { href: "/dashboard",          icon: LayoutDashboard, label: "Analytics",  badge: "FLEET" },
+  { href: "/dashboard/behaviors",icon: Brain,           label: "Behaviors",  badge: "FLEET" },
+  { href: "/dashboard/export",   icon: Download,        label: "Export",     badge: "FLEET" },
 ];
 
-export default function Sidebar({ isInternal }: { isInternal: boolean }) {
+export default function Sidebar({
+  isInternal,
+  userEmail,
+}: {
+  isInternal: boolean;
+  userEmail: string | null;
+}) {
   const pathname = usePathname();
+  const router = useRouter();
+  const supabase = createClient();
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  };
 
   return (
-    <nav
-      style={{
-        width: 220, minWidth: 220,
-        background: "var(--surface)",
-        borderRight: "1px solid var(--border)",
-        display: "flex", flexDirection: "column",
-        position: "sticky", top: 0, height: "100vh",
-        padding: "0",
-      }}
-    >
+    <nav style={{
+      width: 220, minWidth: 220,
+      background: "var(--surface)",
+      borderRight: "1px solid var(--border)",
+      display: "flex", flexDirection: "column",
+      position: "sticky", top: 0, height: "100vh",
+    }}>
       {/* Logo */}
       <div style={{
         padding: "20px 20px 18px",
@@ -42,42 +55,56 @@ export default function Sidebar({ isInternal }: { isInternal: boolean }) {
       </div>
 
       {/* Nav */}
-      <div style={{ padding: "12px 10px", flex: 1 }}>
+      <div style={{ padding: "12px 10px", flex: 1, overflow: "auto" }}>
         <SectionLabel>Public</SectionLabel>
-        {NAV.map(item => (
-          <NavItem key={item.href} href={item.href} icon={item.icon} label={item.label} active={pathname === item.href} />
+        {PUBLIC_NAV.map(item => (
+          <NavItem key={item.href} {...item} active={pathname === item.href} />
         ))}
 
         {isInternal && (
           <>
             <SectionLabel style={{ marginTop: 12 }}>Internal</SectionLabel>
             {INTERNAL_NAV.map(item => (
-              <NavItem
-                key={item.href}
-                href={item.href}
-                icon={item.icon}
-                label={item.label}
-                active={pathname.startsWith(item.href)}
-                badge="FLEET"
-              />
+              <NavItem key={item.href} {...item} active={pathname === item.href} />
             ))}
           </>
         )}
       </div>
 
-      {/* Bottom user badge */}
-      {isInternal && (
-        <div style={{
-          padding: "14px 16px",
-          borderTop: "1px solid var(--border)",
-          fontSize: 11,
-          fontFamily: "var(--font-mono, monospace)",
-          color: "var(--accent2)",
-          background: "rgba(192,132,252,0.05)",
-        }}>
-          @fleet.so
-        </div>
-      )}
+      {/* Bottom — auth */}
+      <div style={{ borderTop: "1px solid var(--border)", padding: "12px 10px" }}>
+        {userEmail ? (
+          <>
+            <div style={{
+              padding: "6px 10px", fontSize: 11,
+              fontFamily: "monospace", color: "var(--muted)",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              {userEmail}
+            </div>
+            <button onClick={signOut} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              width: "100%", padding: "8px 10px", borderRadius: 8,
+              background: "transparent", border: "none",
+              color: "var(--muted)", cursor: "pointer", fontSize: 13,
+              fontFamily: "inherit", fontWeight: 500,
+            }}>
+              <LogOut size={14} /> Sign out
+            </button>
+          </>
+        ) : (
+          <Link href="/login" style={{ textDecoration: "none" }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "9px 10px", borderRadius: 8,
+              color: "var(--accent)", fontSize: 13, fontWeight: 600,
+              background: "rgba(79,142,247,0.08)",
+            }}>
+              <LogIn size={14} /> Sign in
+            </div>
+          </Link>
+        )}
+      </div>
     </nav>
   );
 }
@@ -86,28 +113,24 @@ function SectionLabel({ children, style }: { children: React.ReactNode; style?: 
   return (
     <div style={{
       fontSize: 9, letterSpacing: "1.5px", fontWeight: 700,
-      color: "var(--muted)", padding: "8px 10px 4px", textTransform: "uppercase",
-      ...style,
+      color: "var(--muted)", padding: "8px 10px 4px",
+      textTransform: "uppercase", ...style,
     }}>
       {children}
     </div>
   );
 }
 
-function NavItem({
-  href, icon: Icon, label, active, badge,
-}: {
-  href: string; icon: React.ElementType; label: string; active: boolean; badge?: string;
-}) {
+function NavItem({ href, icon: Icon, label, active, badge }: NavItem & { active: boolean }) {
   return (
     <Link href={href} style={{ textDecoration: "none" }}>
       <div style={{
         display: "flex", alignItems: "center", gap: 9,
         padding: "9px 10px", borderRadius: 8, marginBottom: 2,
         fontSize: 13, fontWeight: 500, cursor: "pointer",
-        transition: "all 0.12s",
         color: active ? "var(--accent)" : "var(--muted)",
         background: active ? "rgba(79,142,247,0.1)" : "transparent",
+        transition: "all 0.12s",
       }}>
         <Icon size={15} />
         {label}

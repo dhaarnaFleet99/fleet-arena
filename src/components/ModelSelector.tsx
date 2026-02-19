@@ -8,10 +8,12 @@ export default function ModelSelector({
   selected: string[];
   onChange: (ids: string[]) => void;
 }) {
+  const MAX = 8;
+
   const toggle = (id: string) => {
     if (selected.includes(id)) {
       onChange(selected.filter((m) => m !== id));
-    } else if (selected.length < 3) {
+    } else if (selected.length < MAX) {
       onChange([...selected, id]);
     }
   };
@@ -19,7 +21,7 @@ export default function ModelSelector({
   return (
     <div>
       <div style={{ fontSize: 11, letterSpacing: "1.2px", color: "var(--muted)", fontWeight: 600, marginBottom: 10 }}>
-        SELECT 2–3 MODELS
+        SELECT 2–8 MODELS
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {MODELS.map((m) => {
@@ -52,8 +54,8 @@ export default function ModelSelector({
         })}
       </div>
       <div style={{ marginTop: 12, fontSize: 12, color: "var(--muted)" }}>
-        {selected.length}/3 selected
-        {selected.length === 3 && " — deselect one to swap"}
+        {selected.length}/{MAX} selected
+        {selected.length === MAX && " — deselect one to swap"}
       </div>
     </div>
   );
