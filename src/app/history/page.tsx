@@ -50,7 +50,7 @@ export default async function HistoryPage() {
                 const modelLabels = s.model_ids.map(id => MODELS.find(m => m.id === id)?.label ?? id.split("/")[1]);
                 const date = new Date(s.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
                 return (
-                  <Link key={s.id} href={`/sessions/${s.id}`} style={{ textDecoration: "none", color: "inherit" }}>
+                  <Link key={s.id} href={`/arena?resume=${s.id}`} style={{ textDecoration: "none", color: "inherit" }}>
                     <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 14, cursor: "pointer" }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
@@ -60,13 +60,6 @@ export default async function HistoryPage() {
                           {s.turn_count} turn{s.turn_count !== 1 ? "s" : ""} · {date}
                         </div>
                       </div>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 20,
-                        background: s.is_complete ? "rgba(52,211,153,0.1)" : "rgba(79,142,247,0.1)",
-                        color: s.is_complete ? "var(--success)" : "var(--accent)",
-                      }}>
-                        {s.is_complete ? "Complete" : "In Progress"}
-                      </span>
                       <span style={{ fontSize: 12, color: "var(--muted)" }}>→</span>
                     </div>
                   </Link>

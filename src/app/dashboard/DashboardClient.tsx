@@ -25,38 +25,14 @@ type Stats = {
 export default function DashboardClient() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [seeding, setSeeding] = useState(false);
-  const [seedMsg, setSeedMsg] = useState<string | null>(null);
-
   useEffect(() => {
     fetch("/api/internal/stats").then(r => r.json()).then(d => { setStats(d); setLoading(false); });
   }, []);
-
-  const seedProfiles = async () => {
-    setSeeding(true);
-    setSeedMsg(null);
-    const res = await fetch("/api/internal/seed-profiles", { method: "POST" });
-    const json = await res.json();
-    setSeedMsg(json.error ? `Error: ${json.error}` : `Synced ${json.upserted} users. Refresh to see updated stats.`);
-    setSeeding(false);
-  };
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <Topbar title="Analytics" />
       <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
-        {/* Profile sync utility */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-          <button onClick={seedProfiles} disabled={seeding} style={{
-            padding: "6px 14px", fontSize: 11, fontWeight: 700, fontFamily: "inherit",
-            background: "rgba(192,132,252,0.1)", color: "var(--accent2)",
-            border: "1px solid rgba(192,132,252,0.2)", borderRadius: 6, cursor: seeding ? "not-allowed" : "pointer",
-          }}>
-            {seeding ? "Syncing…" : "Sync User Profiles"}
-          </button>
-          {seedMsg && <span style={{ fontSize: 11, color: "var(--muted)" }}>{seedMsg}</span>}
-        </div>
-
         {loading || !stats ? (
           <div style={{ color: "var(--muted)", fontSize: 13 }}>Loading…</div>
         ) : (

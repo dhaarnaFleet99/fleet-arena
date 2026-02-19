@@ -2,13 +2,13 @@ import ShellLayout from "@/components/ShellLayout";
 import ArenaClient from "./ArenaClient";
 import { createClient } from "@/lib/supabase/server";
 
-export default async function ArenaPage() {
+export default async function ArenaPage({ searchParams }: { searchParams: { resume?: string } }) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   return (
     <ShellLayout>
-      <ArenaClient userId={user?.id ?? null} />
+      <ArenaClient userId={user?.id ?? null} resumeSessionId={searchParams.resume ?? null} />
     </ShellLayout>
   );
 }

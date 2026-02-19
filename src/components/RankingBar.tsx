@@ -10,9 +10,16 @@ export default function RankingBar({
   onSubmit: (rankings: Record<string, number>) => void;
   onSkip: () => void;
 }) {
-  // Draft is keyed by slotLabel ("A"/"B"/"C") — always set, never collides on empty id
+  const [activeTurnId, setActiveTurnId] = useState(turn.id);
   const [draft, setDraft] = useState<Record<string, number>>({});
   const [expanded, setExpanded] = useState(false);
+
+  // Synchronous reset during render — fires before the new turn is painted
+  if (activeTurnId !== turn.id) {
+    setActiveTurnId(turn.id);
+    setDraft({});
+    setExpanded(false);
+  }
 
   const allStreamingDone = turn.responses.every(r => !r.streaming);
   // All non-streaming responses are rankable — no r.id dependency

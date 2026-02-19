@@ -22,12 +22,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error?.message }, { status: 500 });
   }
 
-  // Bump profile session count
+  // Upsert profile (creates it if missing) then increment session count
   if (user?.id) {
+    const INTERNAL_DOMAIN = process.env.INTERNAL_EMAIL_DOMAIN ?? "fleet.so";
     try {
+      // Create profile row if it doesn't exist yet (trigger may not be installed)
+      await supabase.from("profiles").upsert({
+        id: user.id,
+        email: user.email ?? "",
+        is_internal: user.email?.endsWith("@" + INTERNAL_DOMAIN) ?? false,
+        first_seen_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+      }, { onConflict: "id", ignoreDuplicates: true });
+      // Increment session counter + update last_seen_at
       await supabase.rpc("increment_profile_sessions", { uid: user.id });
     } catch {
-      // ignore if RPC missing or fails
+      // ignore if fails
     }
   }
 

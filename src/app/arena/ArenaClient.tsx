@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, RotateCcw, LogIn } from "lucide-react";
+import { Send, Plus, LogIn } from "lucide-react";
 import { MODELS, getModel } from "@/lib/models";
 import type { Turn, ResponseCard, Session } from "@/types";
 import ResponseCardComponent from "@/components/ResponseCard";
@@ -39,9 +39,9 @@ function buildTurnsFromDB(
     });
 }
 
-type Props = { userId: string | null };
+type Props = { userId: string | null; resumeSessionId: string | null };
 
-export default function ArenaClient({ userId }: Props) {
+export default function ArenaClient({ userId, resumeSessionId }: Props) {
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([
     "anthropic/claude-sonnet-4.6",
     "openai/gpt-4.1",
@@ -55,29 +55,57 @@ export default function ArenaClient({ userId }: Props) {
   const [resuming, setResuming] = useState(true);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── Restore session from localStorage on mount ─────────────────────────────
+  // ── Restore session on mount ───────────────────────────────────────────────
+  // Priority: URL ?resume=ID param (from history) > localStorage (tab switch)
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) { setResuming(false); return; }
-    try {
-      const { sessionId, modelIds } = JSON.parse(saved) as { sessionId: string; modelIds: string[] };
+    const savedStr = localStorage.getItem(STORAGE_KEY);
+
+    const doResume = (sessionId: string, modelIds: string[] | null, allowComplete: boolean) => {
       fetch(`/api/sessions/resume?sessionId=${sessionId}`)
         .then(r => r.json())
         .then(({ session: s, turns: dbTurns, responses, rankings }) => {
-          if (!s || s.is_complete) { localStorage.removeItem(STORAGE_KEY); return; }
-          const rebuilt = buildTurnsFromDB(dbTurns ?? [], responses ?? [], rankings ?? [], modelIds);
-          setSession({ id: s.id, modelIds, turns: [], isComplete: false });
-          setSelectedModelIds(modelIds);
+          if (!s || (!allowComplete && s.is_complete)) {
+            localStorage.removeItem(STORAGE_KEY);
+            return;
+          }
+          const ids = modelIds ?? (s.model_ids as string[]);
+          const rebuilt = buildTurnsFromDB(dbTurns ?? [], responses ?? [], rankings ?? [], ids);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessionId, modelIds: ids }));
+          setSession({ id: s.id, modelIds: ids, turns: [], isComplete: false });
+          setSelectedModelIds(ids);
           setTurns(rebuilt);
           setActiveTurnIdx(Math.max(0, rebuilt.length - 1));
           setPhase("session");
+          // Remove ?resume= param from URL without navigation
+          if (window.location.search) window.history.replaceState(null, "", "/arena");
         })
         .catch(() => localStorage.removeItem(STORAGE_KEY))
         .finally(() => setResuming(false));
+    };
+
+    if (resumeSessionId) {
+      // From history link — complete any different active session first
+      if (savedStr) {
+        try {
+          const { sessionId: oldId } = JSON.parse(savedStr) as { sessionId: string };
+          if (oldId !== resumeSessionId) {
+            navigator.sendBeacon("/api/sessions/complete", new Blob([JSON.stringify({ sessionId: oldId })], { type: "application/json" }));
+          }
+        } catch {}
+      }
+      doResume(resumeSessionId, null, true);
+      return;
+    }
+
+    if (!savedStr) { setResuming(false); return; }
+    try {
+      const { sessionId, modelIds } = JSON.parse(savedStr) as { sessionId: string; modelIds: string[] };
+      doResume(sessionId, modelIds, false);
     } catch {
       localStorage.removeItem(STORAGE_KEY);
       setResuming(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Send beacon on tab/window close to mark session complete ───────────────
@@ -93,6 +121,16 @@ export default function ArenaClient({ userId }: Props) {
 
   // ── Start session ──────────────────────────────────────────────────────────
   const startSession = useCallback(async () => {
+    // Mark any existing active session as complete before starting a new one
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const { sessionId: oldId } = JSON.parse(saved) as { sessionId: string };
+        navigator.sendBeacon("/api/sessions/complete", new Blob([JSON.stringify({ sessionId: oldId })], { type: "application/json" }));
+      } catch {}
+      localStorage.removeItem(STORAGE_KEY);
+    }
+
     const res = await fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -296,15 +334,12 @@ export default function ArenaClient({ userId }: Props) {
     ));
   }, []);
 
-  // ── End session ────────────────────────────────────────────────────────────
-  const endSession = useCallback(async () => {
-    if (!session) return;
-    localStorage.removeItem(STORAGE_KEY);
-    await fetch("/api/sessions", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: session.id }),
-    });
+  // ── New session ────────────────────────────────────────────────────────────
+  const newSession = useCallback(() => {
+    if (session) {
+      navigator.sendBeacon("/api/sessions/complete", new Blob([JSON.stringify({ sessionId: session.id })], { type: "application/json" }));
+      localStorage.removeItem(STORAGE_KEY);
+    }
     setSession(null);
     setTurns([]);
     setPhase("config");
@@ -331,8 +366,8 @@ export default function ArenaClient({ userId }: Props) {
               {turns.length} turn{turns.length !== 1 ? "s" : ""}
             </span>
             <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-              <button onClick={endSession} style={ghostBtn}>
-                <RotateCcw size={13} /> End Session
+              <button onClick={newSession} style={ghostBtn}>
+                <Plus size={13} /> New Session
               </button>
             </div>
           </>
@@ -474,6 +509,7 @@ function SessionScreen({ turns, activeTurnIdx, setActiveTurnIdx, session, onSubm
           </div>
 
           <RankingBar
+            key={activeTurn.id}
             turn={activeTurn}
             onSubmit={rankings => onSubmitRanking(activeTurn.id, rankings)}
             onSkip={() => onSkipRanking(activeTurn.id)}
