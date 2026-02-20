@@ -1,6 +1,7 @@
 import { serve } from "inngest/next";
 import { inngest } from "@/inngest/client";
 import { analyzeSessionFn } from "@/inngest/analyzeSession";
+import { backfillAnalysisFn } from "@/inngest/backfillAnalysis";
 
 // Inngest calls this endpoint to trigger and resume step functions.
 // maxDuration must cover the longest step — the judge LLM call (~90 s).
@@ -8,5 +9,5 @@ export const maxDuration = 120;
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: [analyzeSessionFn],
+  functions: [analyzeSessionFn, backfillAnalysisFn],
 });

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { createEdgeServiceClient } from "@/lib/supabase/edge";
 import { getOpenRouterKey, OPENROUTER_BASE } from "@/lib/openrouter";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkStreamRateLimit } from "@/lib/upstashRateLimit";
 
 // Node.js serverless runtime with a high maxDuration cap.
 // Edge was tried but its hard 30 s wall-clock limit kills multi-model streams.
@@ -9,7 +9,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300; // Vercel Pro: up to 300 s per streaming function
 
 const MODEL_TIMEOUT_MS = 90_000; // 90 s per model before we abort and emit an error
-const STREAM_MAX_PER_MIN = 20;   // per IP
+const MAX_RETRIES = 2; // retry on 429/503 before surfacing to user
+const RETRY_CAP_MS = 15_000; // never wait more than 15 s between retries
 
 // Structured log prefix so Vercel logs are greppable by turn.
 const tag = (turnId: string, slot: string) => `[stream:${turnId}:${slot}]`;
@@ -30,15 +31,15 @@ async function readOpenRouterError(resp: Response): Promise<string> {
 function friendlyError(err: unknown): string {
   const name = (err as Error)?.name;
   const message = (err as Error)?.message ?? String(err);
-  if (name === "AbortError") return "Model timed out — no response within 25 s";
+  if (name === "AbortError") return "Model timed out — no response within 90 s";
   if (name === "TypeError" && message.includes("fetch")) return "Network error reaching OpenRouter";
   return message;
 }
 
 export async function POST(req: NextRequest) {
-  // ── Rate limiting ─────────────────────────────────────────────────────────
+  // ── Rate limiting (Upstash Redis — global across all Vercel instances) ────
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
-  const { ok, retryAfter } = checkRateLimit(`stream:${ip}`, STREAM_MAX_PER_MIN);
+  const { ok, retryAfter } = await checkStreamRateLimit(ip);
   if (!ok) {
     console.warn("[stream] rate-limited", { ip, retryAfter });
     return new Response("Too Many Requests", {
@@ -104,25 +105,45 @@ export async function POST(req: NextRequest) {
         const timer = setTimeout(() => abort.abort(), MODEL_TIMEOUT_MS);
 
         try {
-          const resp = await fetch(OPENROUTER_BASE, {
-            method: "POST",
-            signal: abort.signal,
-            headers: {
-              Authorization: "Bearer " + getOpenRouterKey(),
-              "Content-Type": "application/json",
-              "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-              "X-Title": "Fleet Arena",
-            },
-            body: JSON.stringify({
-              model: modelId,
-              messages,
-              stream: true,
-              max_tokens: 1024,
-            }),
-          });
+          // Retry loop — retries on 429 / 503 before surfacing error to client.
+          let resp: Response | null = null;
+          for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            if (abort.signal.aborted) break;
 
-          if (!resp.ok || !resp.body) {
-            const errMsg = await readOpenRouterError(resp);
+            resp = await fetch(OPENROUTER_BASE, {
+              method: "POST",
+              signal: abort.signal,
+              headers: {
+                Authorization: "Bearer " + getOpenRouterKey(),
+                "Content-Type": "application/json",
+                "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+                "X-Title": "Fleet Arena",
+              },
+              body: JSON.stringify({
+                model: modelId,
+                messages,
+                stream: true,
+                max_tokens: 1024,
+              }),
+            });
+
+            const retryable = resp.status === 429 || resp.status === 503;
+            if (!retryable || attempt === MAX_RETRIES) break;
+
+            // Parse Retry-After if present, fall back to exponential backoff.
+            const retryAfterHeader = resp.headers.get("Retry-After");
+            const backoffMs = retryAfterHeader
+              ? Math.min(parseFloat(retryAfterHeader) * 1000, RETRY_CAP_MS)
+              : Math.min(1000 * 2 ** attempt, RETRY_CAP_MS);
+
+            console.warn(t, `OpenRouter ${resp.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${backoffMs}ms`, { model: modelId });
+            // Consume and discard the error body so the connection is released.
+            await resp.text().catch(() => {});
+            await new Promise(res => setTimeout(res, backoffMs));
+          }
+
+          if (!resp || !resp.ok || !resp.body) {
+            const errMsg = resp ? await readOpenRouterError(resp) : "No response from OpenRouter";
             console.error(t, "OpenRouter error", { model: modelId, error: errMsg });
             send({ type: "error", slotLabel, error: errMsg });
             return;

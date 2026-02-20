@@ -25,6 +25,26 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const INTERNAL_DOMAIN = process.env.INTERNAL_EMAIL_DOMAIN ?? "fleet.so";
 
+  // API routes — return JSON 401/403 instead of redirecting
+  if (path === "/api/stream" || path === "/api/analyze") {
+    if (!user) {
+      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  // Internal API routes — must be @fleet.so
+  if (path.startsWith("/api/internal")) {
+    if (!user?.email?.endsWith("@" + INTERNAL_DOMAIN)) {
+      return new NextResponse(JSON.stringify({ error: "Forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
   // Protect /dashboard — must be @fleet.so
   if (path.startsWith("/dashboard")) {
     if (!user?.email?.endsWith("@" + INTERNAL_DOMAIN)) {
@@ -49,5 +69,11 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/history/:path*", "/sessions/:path*", "/arena/:path*", "/arena", "/login"],
+  matcher: [
+    // Pages
+    "/dashboard/:path*", "/history/:path*", "/sessions/:path*",
+    "/arena/:path*", "/arena", "/login",
+    // API routes that need auth or role checks
+    "/api/stream", "/api/analyze", "/api/internal/:path*",
+  ],
 };
