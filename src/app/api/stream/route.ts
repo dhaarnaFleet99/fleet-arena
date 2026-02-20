@@ -1,7 +1,51 @@
 import { NextRequest } from "next/server";
-import { createServiceClient } from "@/lib/supabase/server";
+import { createEdgeServiceClient } from "@/lib/supabase/edge";
+import { getOpenRouterKey, OPENROUTER_BASE } from "@/lib/openrouter";
+import { checkRateLimit } from "@/lib/rateLimit";
+
+// Run on Vercel's Edge network — purpose-built for long-lived streaming.
+// Concurrency ceiling is ~100k vs ~1k for serverless functions.
+export const runtime = "edge";
+
+const MODEL_TIMEOUT_MS = 25_000; // 25 s — stay under Edge's 30 s execution limit
+const STREAM_MAX_PER_MIN = 20;   // per IP
+
+// Structured log prefix so Vercel logs are greppable by turn.
+const tag = (turnId: string, slot: string) => `[stream:${turnId}:${slot}]`;
+
+// Read the OpenRouter error body and extract a useful message.
+async function readOpenRouterError(resp: Response): Promise<string> {
+  try {
+    const text = await resp.text();
+    const json = JSON.parse(text);
+    const msg: string = json?.error?.message ?? json?.message ?? text;
+    return `${resp.status} ${msg.slice(0, 300)}`;
+  } catch {
+    return `HTTP ${resp.status}`;
+  }
+}
+
+// Map low-level JS errors to messages that are useful to the user.
+function friendlyError(err: unknown): string {
+  const name = (err as Error)?.name;
+  const message = (err as Error)?.message ?? String(err);
+  if (name === "AbortError") return "Model timed out — no response within 25 s";
+  if (name === "TypeError" && message.includes("fetch")) return "Network error reaching OpenRouter";
+  return message;
+}
 
 export async function POST(req: NextRequest) {
+  // ── Rate limiting ─────────────────────────────────────────────────────────
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  const { ok, retryAfter } = checkRateLimit(`stream:${ip}`, STREAM_MAX_PER_MIN);
+  if (!ok) {
+    console.warn("[stream] rate-limited", { ip, retryAfter });
+    return new Response("Too Many Requests", {
+      status: 429,
+      headers: { "Retry-After": String(retryAfter) },
+    });
+  }
+
   const { sessionId, turnId, modelIds, messages } = await req.json() as {
     sessionId: string;
     turnId: string;
@@ -10,31 +54,27 @@ export async function POST(req: NextRequest) {
   };
 
   if (!sessionId || !turnId || !modelIds?.length || !messages?.length) {
+    console.warn("[stream] bad request", { sessionId, turnId, modelCount: modelIds?.length });
     return new Response("Bad Request", { status: 400 });
   }
 
   const slotLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
-  // ── Create response rows BEFORE the stream starts ─────────────────────────
-  // Must run in the normal route handler async context. @supabase/ssr can fail
-  // silently when createServiceClient() is called inside a ReadableStream callback,
-  // which would leave the responses table empty and break rankings.
-  const supabase = createServiceClient();
+  // ── Create response rows before the stream opens ──────────────────────────
+  const supabase = createEdgeServiceClient();
   const responseIds: Record<string, string> = {};
   for (let i = 0; i < modelIds.length; i++) {
     const { data, error } = await supabase
       .from("responses")
-      .insert({
-        turn_id: turnId,
-        model_id: modelIds[i],
-        // slot_label and session_id omitted — columns missing from live DB schema.
-        // Slot is derived at query-time from model order in session.model_ids.
-        content: "",
-      })
+      .insert({ turn_id: turnId, model_id: modelIds[i], content: "" })
       .select("id")
       .single();
     if (error) {
-      console.error("[stream] response insert failed:", error.message, { modelId: modelIds[i], turnId, sessionId });
+      console.error(tag(turnId, slotLabels[i]), "response row insert failed", {
+        model: modelIds[i],
+        code: error.code,
+        detail: error.message,
+      });
     }
     if (data) responseIds[modelIds[i]] = data.id;
   }
@@ -47,21 +87,27 @@ export async function POST(req: NextRequest) {
         controller.enqueue(encoder.encode("data: " + JSON.stringify(data) + "\n\n"));
       };
 
-      // Separate client instance for updates inside the stream
-      const updateSupabase = createServiceClient();
+      const updateDb = createEdgeServiceClient();
 
       const starts: Record<string, number> = {};
       modelIds.forEach(id => (starts[id] = Date.now()));
 
+      console.log(`[stream:${turnId}]`, "starting", { models: modelIds, sessionId });
+
       await Promise.all(modelIds.map(async (modelId, idx) => {
         const slotLabel = slotLabels[idx];
+        const t = tag(turnId, slotLabel);
         const fullContent: string[] = [];
 
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), MODEL_TIMEOUT_MS);
+
         try {
-          const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          const resp = await fetch(OPENROUTER_BASE, {
             method: "POST",
+            signal: abort.signal,
             headers: {
-              Authorization: "Bearer " + process.env.OPENROUTER_API_KEY,
+              Authorization: "Bearer " + getOpenRouterKey(),
               "Content-Type": "application/json",
               "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
               "X-Title": "Fleet Arena",
@@ -75,7 +121,9 @@ export async function POST(req: NextRequest) {
           });
 
           if (!resp.ok || !resp.body) {
-            send({ type: "error", slotLabel, error: "HTTP " + resp.status });
+            const errMsg = await readOpenRouterError(resp);
+            console.error(t, "OpenRouter error", { model: modelId, error: errMsg });
+            send({ type: "error", slotLabel, error: errMsg });
             return;
           }
 
@@ -104,26 +152,44 @@ export async function POST(req: NextRequest) {
                   const latency = Date.now() - starts[modelId];
                   const responseId = responseIds[modelId];
                   if (responseId) {
-                    const { error: updateErr } = await updateSupabase.from("responses").update({
+                    const { error: updateErr } = await updateDb.from("responses").update({
                       content,
                       latency_ms: latency,
                       finish_reason: finishReason,
                       token_count: Math.round(content.length / 4),
                     }).eq("id", responseId);
                     if (updateErr) {
-                      console.error("[stream] response update failed:", updateErr.message, { responseId, modelId });
+                      console.error(t, "response update failed", {
+                        responseId,
+                        code: updateErr.code,
+                        detail: updateErr.message,
+                      });
                     }
                   }
+                  console.log(t, "done", { model: modelId, latency, chars: fullContent.join("").length, finishReason });
                   send({ type: "done", slotLabel, responseId, finishReason });
                 }
-              } catch {}
+              } catch (parseErr) {
+                // Malformed SSE line from OpenRouter — log once per line so we can spot patterns
+                console.warn(t, "malformed SSE line", { raw: raw.slice(0, 120), err: String(parseErr) });
+              }
             }
           }
         } catch (err) {
-          send({ type: "error", slotLabel, error: String(err) });
+          const isTimeout = (err as Error)?.name === "AbortError";
+          const msg = friendlyError(err);
+          if (isTimeout) {
+            console.warn(t, "model timed out", { model: modelId, limitMs: MODEL_TIMEOUT_MS });
+          } else {
+            console.error(t, "unexpected error", { model: modelId, err: String(err) });
+          }
+          send({ type: "error", slotLabel, error: msg });
+        } finally {
+          clearTimeout(timer);
         }
       }));
 
+      console.log(`[stream:${turnId}]`, "complete", { responseIds });
       send({ type: "complete", responseIds });
       controller.close();
     },
