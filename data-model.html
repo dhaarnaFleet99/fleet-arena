@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Fleet Arena — Data Model</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #080B12;
+    color: #E2E8F0;
+    font-family: 'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+    padding: 48px;
+    min-width: 1200px;
+  }
+
+  h1 { font-size: 20px; font-weight: 800; color: #fff; margin-bottom: 4px; letter-spacing: -0.5px; }
+  .subtitle { font-size: 11px; color: #334155; margin-bottom: 48px; letter-spacing: 0.5px; }
+
+  /* ── Table card ── */
+  .table-card {
+    background: #0E1420;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+  }
+  .table-header {
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .table-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  .table-name {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+  }
+  .table-desc {
+    font-size: 10px;
+    color: #475569;
+    margin-left: auto;
+    text-align: right;
+  }
+  .col-list { padding: 10px 0; }
+  .col-row {
+    display: flex;
+    align-items: center;
+    padding: 5px 16px;
+    gap: 10px;
+    transition: background 0.1s;
+  }
+  .col-row:hover { background: rgba(255,255,255,0.02); }
+  .col-name {
+    font-size: 11px;
+    font-weight: 600;
+    min-width: 150px;
+    flex-shrink: 0;
+  }
+  .col-type {
+    font-size: 10px;
+    color: #475569;
+    min-width: 80px;
+    flex-shrink: 0;
+  }
+  .col-desc {
+    font-size: 10px;
+    color: #334155;
+    flex: 1;
+  }
+  .badge {
+    font-size: 8px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+  .pk { background: rgba(251,191,36,0.15); color: #FBBF24; }
+  .fk { background: rgba(79,142,247,0.15); color: #4F8EF7; }
+  .idx { background: rgba(52,211,153,0.12); color: #34D399; }
+  .col-divider {
+    height: 1px;
+    background: rgba(255,255,255,0.04);
+    margin: 4px 16px;
+  }
+
+  /* ── Layout ── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr 280px;
+    gap: 0;
+    align-items: start;
+    position: relative;
+  }
+  .left-col { display: flex; flex-direction: column; gap: 16px; padding-right: 60px; }
+  .center-col { display: flex; flex-direction: column; gap: 16px; }
+  .right-col { display: flex; flex-direction: column; gap: 16px; padding-left: 60px; }
+
+  /* ── SVG arrows ── */
+  .diagram-wrapper {
+    position: relative;
+  }
+  svg.arrows {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  /* ── Relationship legend ── */
+  .legend {
+    margin-top: 40px;
+    display: flex;
+    gap: 24px;
+    align-items: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    color: #475569;
+  }
+  .legend-line {
+    width: 30px;
+    height: 1px;
+    background: #4F8EF7;
+  }
+  .legend-line.cascade { background: #F87171; border-top: 1px dashed #F87171; background: none; }
+  .legend-line.optional { border-top: 1px dashed #475569; background: none; }
+
+  /* ── Flow notes ── */
+  .notes-grid {
+    margin-top: 40px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+  .note {
+    background: #0E1420;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .note-title { font-size: 10px; font-weight: 700; margin-bottom: 6px; color: #94A3B8; }
+  .note-body { font-size: 10px; color: #475569; line-height: 1.8; }
+  .note-body code { color: #C084FC; }
+  .note-body strong { color: #64748B; }
+
+  /* rpc callout */
+  .rpc-box {
+    margin-top: 40px;
+    background: rgba(79,142,247,0.05);
+    border: 1px solid rgba(79,142,247,0.15);
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .rpc-title { font-size: 10px; font-weight: 700; color: #4F8EF7; margin-bottom: 8px; letter-spacing: 0.5px; text-transform: uppercase; }
+  .rpc-code {
+    font-size: 10px;
+    color: #64748B;
+    line-height: 1.9;
+    background: rgba(0,0,0,0.3);
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.04);
+  }
+  .kw { color: #C084FC; }
+  .fn { color: #4F8EF7; }
+  .str { color: #34D399; }
+  .cm { color: #334155; }
+
+  /* client map */
+  .client-map {
+    margin-top: 40px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .client-box {
+    background: #0E1420;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .client-title { font-size: 10px; font-weight: 700; color: #94A3B8; margin-bottom: 8px; }
+  .client-body { font-size: 10px; color: #475569; line-height: 1.8; }
+  .client-body strong { color: #64748B; }
+
+  footer { margin-top: 48px; font-size: 9px; color: #1E293B; text-align: center; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+
+<h1>Fleet Arena — Data Model</h1>
+<div class="subtitle">PostgreSQL via Supabase · PostgREST · Row Level Security · 6 tables</div>
+
+<div class="diagram-wrapper" id="wrapper">
+
+  <!-- SVG for relationship arrows — drawn by JS after layout -->
+  <svg class="arrows" id="arrows"></svg>
+
+  <div class="main-grid" id="grid">
+
+    <!-- LEFT COLUMN -->
+    <div class="left-col">
+
+      <!-- auth.users (external) -->
+      <div class="table-card" id="t-auth" style="border-color: rgba(100,116,139,0.3);">
+        <div class="table-header" style="background: rgba(100,116,139,0.06);">
+          <div class="table-icon" style="background: rgba(100,116,139,0.15);">🔐</div>
+          <div>
+            <div class="table-name" style="color:#94A3B8;">auth.users</div>
+          </div>
+          <div class="table-desc">Supabase managed · not direct-editable</div>
+        </div>
+        <div class="col-list">
+          <div class="col-row">
+            <span class="badge pk">PK</span>
+            <span class="col-name" style="color:#FBBF24;">id</span>
+            <span class="col-type">uuid</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">email</span>
+            <span class="col-type">text</span>
+            <span class="col-desc">from signup</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">created_at</span>
+            <span class="col-type">timestamptz</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- profiles -->
+      <div class="table-card" id="t-profiles" style="border-color: rgba(192,132,252,0.25);">
+        <div class="table-header" style="background: rgba(192,132,252,0.05);">
+          <div class="table-icon" style="background: rgba(192,132,252,0.12);">👤</div>
+          <div>
+            <div class="table-name" style="color:#C084FC;">profiles</div>
+          </div>
+          <div class="table-desc">1:1 with auth.users</div>
+        </div>
+        <div class="col-list">
+          <div class="col-row">
+            <span class="badge pk">PK</span>
+            <span class="col-name" style="color:#FBBF24;">id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">= auth.users.id</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">email</span>
+            <span class="col-type">text</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">display_name</span>
+            <span class="col-type">text</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">is_internal</span>
+            <span class="col-type">bool</span>
+            <span class="col-desc">true if @fleet.so</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">total_sessions</span>
+            <span class="col-type">int</span>
+            <span class="col-desc">atomic via RPC</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">total_rankings</span>
+            <span class="col-type">int</span>
+            <span class="col-desc">atomic via RPC</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">first_seen_at</span>
+            <span class="col-type">timestamptz</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">last_seen_at</span>
+            <span class="col-type">timestamptz</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /left-col -->
+
+    <!-- CENTER COLUMN -->
+    <div class="center-col">
+
+      <!-- sessions -->
+      <div class="table-card" id="t-sessions" style="border-color: rgba(79,142,247,0.3);">
+        <div class="table-header" style="background: rgba(79,142,247,0.06);">
+          <div class="table-icon" style="background: rgba(79,142,247,0.15);">🗂</div>
+          <div>
+            <div class="table-name" style="color:#4F8EF7;">sessions</div>
+          </div>
+          <div class="table-desc">one per comparison run · 2–8 models</div>
+        </div>
+        <div class="col-list">
+          <div class="col-row">
+            <span class="badge pk">PK</span>
+            <span class="col-name" style="color:#FBBF24;">id</span>
+            <span class="col-type">uuid</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">user_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ auth.users</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">model_ids</span>
+            <span class="col-type">text[]</span>
+            <span class="col-desc">slot order: [0]=A, [1]=B, … · source of truth for blind reveal</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">is_complete</span>
+            <span class="col-type">bool</span>
+            <span class="col-desc">set on session end (sendBeacon)</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">turn_count</span>
+            <span class="col-type">int</span>
+            <span class="col-desc">synced with turns table</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">analyzed_turn_count</span>
+            <span class="col-type">int</span>
+            <span class="col-desc">Inngest idempotency check</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">created_at</span>
+            <span class="col-type">timestamptz</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">metadata</span>
+            <span class="col-type">jsonb</span>
+            <span class="col-desc">extensible</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- turns -->
+      <div class="table-card" id="t-turns" style="border-color: rgba(79,142,247,0.2);">
+        <div class="table-header" style="background: rgba(79,142,247,0.04);">
+          <div class="table-icon" style="background: rgba(79,142,247,0.1);">💬</div>
+          <div>
+            <div class="table-name" style="color:#7BAEF8;">turns</div>
+          </div>
+          <div class="table-desc">one per prompt within a session</div>
+        </div>
+        <div class="col-list">
+          <div class="col-row">
+            <span class="badge pk">PK</span>
+            <span class="col-name" style="color:#FBBF24;">id</span>
+            <span class="col-type">uuid</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">session_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ sessions (cascade delete)</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">turn_number</span>
+            <span class="col-type">int</span>
+            <span class="col-desc">1-indexed within session</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">prompt</span>
+            <span class="col-type">text</span>
+            <span class="col-desc">user input</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">ranking_submitted</span>
+            <span class="col-type">bool</span>
+            <span class="col-desc">set when /api/rankings called</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">created_at</span>
+            <span class="col-type">timestamptz</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- responses -->
+      <div class="table-card" id="t-responses" style="border-color: rgba(52,211,153,0.2);">
+        <div class="table-header" style="background: rgba(52,211,153,0.04);">
+          <div class="table-icon" style="background: rgba(52,211,153,0.1);">📝</div>
+          <div>
+            <div class="table-name" style="color:#34D399;">responses</div>
+          </div>
+          <div class="table-desc">one per model per turn · written during streaming</div>
+        </div>
+        <div class="col-list">
+          <div class="col-row">
+            <span class="badge pk">PK</span>
+            <span class="col-name" style="color:#FBBF24;">id</span>
+            <span class="col-type">uuid</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">turn_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ turns (cascade delete)</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">session_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ sessions · denormalized for faster queries</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">model_id</span>
+            <span class="col-type">text</span>
+            <span class="col-desc">e.g. "anthropic/claude-sonnet-4-5"</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">content</span>
+            <span class="col-type">text</span>
+            <span class="col-desc">full response text</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">latency_ms</span>
+            <span class="col-type">int</span>
+            <span class="col-desc">time-to-first-token</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">token_count</span>
+            <span class="col-type">int</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">finish_reason</span>
+            <span class="col-type">text</span>
+            <span class="col-desc">stop · length · content_filter</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /center-col -->
+
+    <!-- RIGHT COLUMN -->
+    <div class="right-col">
+
+      <!-- rankings -->
+      <div class="table-card" id="t-rankings" style="border-color: rgba(251,191,36,0.25);">
+        <div class="table-header" style="background: rgba(251,191,36,0.05);">
+          <div class="table-icon" style="background: rgba(251,191,36,0.12);">🏆</div>
+          <div>
+            <div class="table-name" style="color:#FBBF24;">rankings</div>
+          </div>
+          <div class="table-desc">one row per model per ranked turn</div>
+        </div>
+        <div class="col-list">
+          <div class="col-row">
+            <span class="badge pk">PK</span>
+            <span class="col-name" style="color:#FBBF24;">id</span>
+            <span class="col-type">uuid</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">turn_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ turns (cascade)</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">response_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ responses (cascade)</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">user_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ auth.users</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name" style="color:#FBBF24;">rank</span>
+            <span class="col-type">int</span>
+            <span class="col-desc">1 = best · N = worst</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">created_at</span>
+            <span class="col-type">timestamptz</span>
+            <span class="col-desc">used for weekly breakdown</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- behavioral_flags -->
+      <div class="table-card" id="t-flags" style="border-color: rgba(248,113,113,0.25);">
+        <div class="table-header" style="background: rgba(248,113,113,0.05);">
+          <div class="table-icon" style="background: rgba(248,113,113,0.12);">🚩</div>
+          <div>
+            <div class="table-name" style="color:#F87171;">behavioral_flags</div>
+          </div>
+          <div class="table-desc">written by Inngest judge · async</div>
+        </div>
+        <div class="col-list">
+          <div class="col-row">
+            <span class="badge pk">PK</span>
+            <span class="col-name" style="color:#FBBF24;">id</span>
+            <span class="col-type">uuid</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk">FK</span>
+            <span class="col-name" style="color:#4F8EF7;">session_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">→ sessions (cascade)</span>
+          </div>
+          <div class="col-row">
+            <span class="badge fk" style="opacity:0.5;">FK?</span>
+            <span class="col-name" style="color:#4F8EF7;">turn_id</span>
+            <span class="col-type">uuid</span>
+            <span class="col-desc">nullable · not all flags are per-turn</span>
+          </div>
+          <div class="col-divider"></div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">model_id</span>
+            <span class="col-type">text</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name" style="color:#F87171;">flag_type</span>
+            <span class="col-type">text</span>
+            <span class="col-desc">refusal · context_loss · sycophancy · verbosity · rank_reversal</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">severity</span>
+            <span class="col-type">text</span>
+            <span class="col-desc">low · medium · high</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">confidence</span>
+            <span class="col-type">float</span>
+            <span class="col-desc">0.0 – 1.0 · judge confidence</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">description</span>
+            <span class="col-type">text</span>
+          </div>
+          <div class="col-row">
+            <span class="badge" style="background:transparent;"></span>
+            <span class="col-name">evidence</span>
+            <span class="col-type">jsonb</span>
+            <span class="col-desc">quotes from response</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /right-col -->
+
+  </div><!-- /main-grid -->
+</div><!-- /diagram-wrapper -->
+
+<!-- ── Legend ── -->
+<div class="legend">
+  <div class="legend-item">
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:8px;height:8px;border-radius:50%;background:#FBBF24;"></div>
+      <span style="font-size:9px;color:#FBBF24;font-weight:700;">PK</span>
+    </div>
+    Primary Key
+  </div>
+  <div class="legend-item">
+    <div style="display:flex;align-items:center;gap:4px;">
+      <div style="width:8px;height:8px;border-radius:50%;background:#4F8EF7;"></div>
+      <span style="font-size:9px;color:#4F8EF7;font-weight:700;">FK</span>
+    </div>
+    Foreign Key
+  </div>
+  <div class="legend-item">
+    <div style="width:30px;height:1px;background:#4F8EF7;"></div>
+    FK reference
+  </div>
+  <div class="legend-item">
+    <div style="width:30px;height:1px;background:none;border-top:1px dashed #F87171;"></div>
+    cascade delete
+  </div>
+  <div class="legend-item" style="margin-left:auto;font-size:10px;color:#334155;">
+    All tables: RLS policies enforce user_id = auth.uid() · service role bypasses RLS
+  </div>
+</div>
+
+<!-- ── RPC section ── -->
+<div class="rpc-box">
+  <div>
+    <div class="rpc-title">RPC: increment_profile_sessions / rankings</div>
+    <div class="rpc-code">
+<span class="kw">CREATE FUNCTION</span> <span class="fn">increment_profile_sessions</span>(uid uuid)<br>
+<span class="kw">RETURNS void AS</span> $$<br>
+&nbsp;&nbsp;<span class="kw">INSERT INTO</span> profiles (id, total_sessions, last_seen_at)<br>
+&nbsp;&nbsp;<span class="kw">VALUES</span> (uid, 1, <span class="fn">now()</span>)<br>
+&nbsp;&nbsp;<span class="kw">ON CONFLICT</span> (id) <span class="kw">DO UPDATE SET</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;total_sessions = profiles.total_sessions + 1,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;last_seen_at = <span class="fn">now()</span>;<br>
+$$ <span class="kw">LANGUAGE</span> sql;
+    </div>
+  </div>
+  <div>
+    <div class="rpc-title">Why not just UPDATE?</div>
+    <div style="font-size:10px;color:#475569;line-height:1.9;margin-top:4px;">
+      A plain <code style="color:#C084FC;">UPDATE SET total_sessions = total_sessions + 1</code> has a race condition:<br><br>
+      Request A reads 5 → Request B reads 5 → A writes 6 → B writes 6.<br>
+      You lose one increment.<br><br>
+      A Postgres function runs <strong style="color:#64748B;">atomically inside the DB engine</strong> — no two transactions can interleave it. The counter is always accurate even under concurrent load.<br><br>
+      The <code style="color:#C084FC;">ON CONFLICT</code> clause also handles the case where the profile row doesn't exist yet — it's an upsert, not just an update.
+    </div>
+  </div>
+</div>
+
+<!-- ── Client map ── -->
+<div class="client-map">
+  <div class="client-box">
+    <div class="client-title">createClient() — anon key + user cookies</div>
+    <div class="client-body">
+      Used in: browser-facing server components, middleware<br>
+      Auth: reads Supabase session cookie per request<br>
+      RLS: <strong>enforced</strong> — users only see their own rows<br>
+      Cannot bypass row-level security<br>
+      Not a singleton — cookie store changes per request
+    </div>
+  </div>
+  <div class="client-box">
+    <div class="client-title">createServiceClient() — service role key</div>
+    <div class="client-body">
+      Used in: API routes (/api/stream, /api/rankings, /api/internal/**)<br>
+      Auth: service role key (never sent to browser)<br>
+      RLS: <strong>bypassed</strong> — full table access<br>
+      Needed for cross-user reads (stats, export, judge writes)<br>
+      Singleton — stateless, reused across warm invocations
+    </div>
+  </div>
+</div>
+
+<!-- ── Key relationships note ── -->
+<div class="notes-grid">
+  <div class="note">
+    <div class="note-title">Blind reveal mechanism</div>
+    <div class="note-body">
+      <code>sessions.model_ids[]</code> defines slot order.<br>
+      Slot A = <code>model_ids[0]</code>, B = <code>[1]</code>, etc.<br>
+      Client sees only "A / B / C" during ranking.<br>
+      <code>/api/rankings</code> maps slot → modelId server-side.<br>
+      Returns <code>revealed: [{model_id, slot_label}]</code> only after INSERT.
+    </div>
+  </div>
+  <div class="note">
+    <div class="note-title">Normalized rank formula</div>
+    <div class="note-body">
+      For each rankings row:<br>
+      N = total models ranked that turn<br>
+      score = <code>(N - rank) / (N - 1)</code><br>
+      rank=1 in 2-way → score = 1.0<br>
+      rank=1 in 4-way → score = 1.0<br>
+      rank=2 in 4-way → score = 0.667<br>
+      rank=4 in 4-way → score = 0.0<br>
+      Averaged per model across all turns.
+    </div>
+  </div>
+  <div class="note">
+    <div class="note-title">session_id denorm on responses</div>
+    <div class="note-body">
+      <code>responses.session_id</code> duplicates what's already derivable via <code>turn.session_id</code>.<br>
+      It exists to allow single-table queries on responses filtered by session without a JOIN — used in export routes and Inngest analysis where we load all responses for a session in one call.
+    </div>
+  </div>
+</div>
+
+<footer id="footer">FLEET ARENA · INTERNAL · fleet.so</footer>
+
+<script>
+document.getElementById('footer').textContent =
+  'FLEET ARENA · INTERNAL · fleet.so · ' +
+  new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+// Draw relationship arrows between tables
+function mid(el) {
+  const r = el.getBoundingClientRect();
+  const wr = document.getElementById('wrapper').getBoundingClientRect();
+  return {
+    top:    r.top - wr.top,
+    bottom: r.bottom - wr.top,
+    left:   r.left - wr.left,
+    right:  r.right - wr.left,
+    cx:     r.left - wr.left + r.width / 2,
+    cy:     r.top - wr.top + r.height / 2,
+  };
+}
+
+function drawArrow(svg, x1, y1, x2, y2, color, dashed) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.sqrt(dx*dx + dy*dy);
+  const ux = dx/len, uy = dy/len;
+  // shorten end for arrowhead
+  const ex = x2 - ux*8, ey = y2 - uy*8;
+
+  const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+  // smooth bezier
+  const cx = (x1+x2)/2, cy = (y1+y2)/2;
+  path.setAttribute('d', `M${x1},${y1} Q${cx},${y1} ${ex},${ey}`);
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', color);
+  path.setAttribute('stroke-width', '1');
+  path.setAttribute('opacity', '0.4');
+  if (dashed) path.setAttribute('stroke-dasharray', '4,3');
+  svg.appendChild(path);
+
+  // arrowhead
+  const ah = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+  const ax = -uy*4, ay = ux*4;
+  ah.setAttribute('points', `${x2},${y2} ${ex-ax},${ey-ay} ${ex+ax},${ey+ay}`);
+  ah.setAttribute('fill', color);
+  ah.setAttribute('opacity', '0.5');
+  svg.appendChild(ah);
+}
+
+window.addEventListener('load', () => {
+  const svg = document.getElementById('arrows');
+  const auth     = mid(document.getElementById('t-auth'));
+  const profiles = mid(document.getElementById('t-profiles'));
+  const sessions = mid(document.getElementById('t-sessions'));
+  const turns    = mid(document.getElementById('t-turns'));
+  const responses= mid(document.getElementById('t-responses'));
+  const rankings = mid(document.getElementById('t-rankings'));
+  const flags    = mid(document.getElementById('t-flags'));
+
+  // auth → profiles (1:1)
+  drawArrow(svg, auth.right, auth.cy + 20, profiles.right, profiles.cy - 30, '#94A3B8', false);
+
+  // auth → sessions
+  drawArrow(svg, auth.right, auth.cy, sessions.left, sessions.cy - 40, '#4F8EF7', false);
+
+  // profiles → sessions (user sessions count)
+  drawArrow(svg, profiles.right, profiles.cy, sessions.left, sessions.cy, '#4F8EF7', true);
+
+  // sessions → turns (cascade)
+  drawArrow(svg, sessions.cx, sessions.bottom, turns.cx, turns.top, '#F87171', true);
+
+  // turns → responses (cascade)
+  drawArrow(svg, turns.cx, turns.bottom, responses.cx, responses.top, '#F87171', true);
+
+  // responses → rankings (cascade)
+  drawArrow(svg, responses.right, responses.cy - 20, rankings.left, rankings.cy + 20, '#F87171', true);
+
+  // turns → rankings
+  drawArrow(svg, turns.right, turns.cy, rankings.left, rankings.cy - 20, '#4F8EF7', false);
+
+  // sessions → behavioral_flags (cascade)
+  drawArrow(svg, sessions.right, sessions.cy + 20, flags.left, flags.cy - 20, '#F87171', true);
+
+  // turns → behavioral_flags (optional)
+  drawArrow(svg, turns.right + 10, turns.cy + 30, flags.left, flags.cy + 20, '#475569', true);
+});
+</script>
+</body>
+</html>

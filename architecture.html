@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Fleet Arena — Architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #080B12;
+    color: #E2E8F0;
+    font-family: 'JetBrains Mono', 'Fira Mono', monospace;
+    padding: 48px;
+    min-width: 1400px;
+  }
+
+  h1 {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: #fff;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    font-size: 11px;
+    color: #64748B;
+    margin-bottom: 40px;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Layer labels ── */
+  .layer-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #334155;
+    margin-bottom: 10px;
+  }
+
+  /* ── Boxes ── */
+  .box {
+    border-radius: 10px;
+    padding: 14px 16px;
+    border: 1px solid rgba(255,255,255,0.07);
+    background: #0E1420;
+    position: relative;
+  }
+  .box-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 6px;
+  }
+  .box-sub {
+    font-size: 10px;
+    color: #64748B;
+    line-height: 1.6;
+  }
+  .box-sub span { color: #94A3B8; }
+  .tag {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 20px;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+
+  /* Layer wrappers */
+  .layer {
+    border-radius: 14px;
+    padding: 20px 20px 20px 20px;
+    margin-bottom: 16px;
+    border: 1px solid;
+    position: relative;
+  }
+  .layer-browser  { border-color: rgba(79,142,247,0.2); background: rgba(79,142,247,0.03); }
+  .layer-server   { border-color: rgba(192,132,252,0.2); background: rgba(192,132,252,0.03); }
+  .layer-external { border-color: rgba(52,211,153,0.2); background: rgba(52,211,153,0.03); }
+  .layer-async    { border-color: rgba(251,191,36,0.2); background: rgba(251,191,36,0.03); }
+
+  /* Grid helpers */
+  .grid { display: grid; gap: 12px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g3 { grid-template-columns: 1fr 1fr 1fr; }
+  .g4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  .g5 { grid-template-columns: 1fr 1fr 1fr 1fr 1fr; }
+
+  /* Color accents per service */
+  .c-blue   { color: #4F8EF7; }
+  .c-purple { color: #C084FC; }
+  .c-green  { color: #34D399; }
+  .c-yellow { color: #FBBF24; }
+  .c-red    { color: #F87171; }
+  .c-muted  { color: #64748B; }
+
+  .tag-blue   { background: rgba(79,142,247,0.12); color: #4F8EF7; }
+  .tag-purple { background: rgba(192,132,252,0.12); color: #C084FC; }
+  .tag-green  { background: rgba(52,211,153,0.12); color: #34D399; }
+  .tag-yellow { background: rgba(251,191,36,0.12); color: #FBBF24; }
+  .tag-red    { background: rgba(248,113,113,0.12); color: #F87171; }
+
+  /* Arrow row */
+  .arrows {
+    display: flex;
+    justify-content: center;
+    gap: 80px;
+    margin: 10px 0;
+    align-items: center;
+  }
+  .arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+  .arrow-label { font-size: 9px; color: #334155; letter-spacing: 0.5px; }
+  .arrow-line {
+    width: 1px;
+    height: 24px;
+    background: linear-gradient(to bottom, #1E293B, #334155);
+    position: relative;
+  }
+  .arrow-line::after {
+    content: '▼';
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 8px;
+    color: #334155;
+  }
+
+  /* Data flow section */
+  .flow-section {
+    margin-top: 40px;
+  }
+  .flow-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 20px;
+  }
+  .flow-step {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 10px;
+    align-items: flex-start;
+  }
+  .flow-num {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: rgba(79,142,247,0.15);
+    border: 1px solid rgba(79,142,247,0.3);
+    color: #4F8EF7;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .flow-text { font-size: 11px; color: #94A3B8; line-height: 1.7; }
+  .flow-text strong { color: #E2E8F0; }
+  .flow-text code { color: #C084FC; background: rgba(192,132,252,0.1); padding: 0 4px; border-radius: 3px; }
+
+  /* Decisions */
+  .decisions { margin-top: 40px; }
+  .decision {
+    padding: 14px 16px;
+    border-left: 2px solid rgba(79,142,247,0.4);
+    margin-bottom: 10px;
+    background: rgba(79,142,247,0.03);
+    border-radius: 0 8px 8px 0;
+  }
+  .decision-title { font-size: 11px; font-weight: 700; color: #4F8EF7; margin-bottom: 4px; }
+  .decision-body { font-size: 10px; color: #64748B; line-height: 1.7; }
+  .decision-body strong { color: #94A3B8; }
+
+  /* Schema */
+  .schema-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+  .schema-table { background: #0A0F1A; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px; }
+  .schema-table-name { font-size: 10px; font-weight: 700; color: #C084FC; margin-bottom: 8px; }
+  .schema-col { font-size: 9px; color: #475569; line-height: 1.8; }
+  .schema-col .pk { color: #FBBF24; }
+  .schema-col .fk { color: #4F8EF7; }
+  .schema-col .type { color: #64748B; }
+
+  .divider {
+    height: 1px;
+    background: rgba(255,255,255,0.05);
+    margin: 40px 0;
+  }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+  .metric-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.07);
+    color: #64748B;
+    margin: 2px 2px 0 0;
+  }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  footer {
+    margin-top: 60px;
+    font-size: 9px;
+    color: #1E293B;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Fleet Arena — System Architecture</h1>
+<div class="subtitle">frontier LLM blind-comparison platform · Next.js 14 · Supabase · OpenRouter · Inngest · Vercel</div>
+
+<!-- ═══════════════════════════════════════════════════════ BROWSER LAYER -->
+<div class="layer layer-browser">
+  <div class="layer-label c-blue">Browser · React 18 (client components)</div>
+  <div class="grid g5">
+
+    <div class="box">
+      <div class="tag tag-blue">Page</div>
+      <div class="box-title">ArenaClient.tsx</div>
+      <div class="box-sub">
+        <span>Model picker</span> → session state → SSE stream → ranking UI<br>
+        LocalStorage resume · beforeunload beacon<br>
+        Multi-turn context (best prior response)
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="tag tag-blue">Component</div>
+      <div class="box-title">ResponseCard.tsx</div>
+      <div class="box-sub">
+        Live SSE delta rendering<br>
+        Slot label (blind) → model reveal<br>
+        Latency · tokens · finish_reason
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="tag tag-blue">Component</div>
+      <div class="box-title">RankingBar.tsx</div>
+      <div class="box-sub">
+        1=best rank buttons per slot<br>
+        Auto-expand on stream done<br>
+        Submit &amp; Reveal · Skip
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="tag tag-purple">Internal</div>
+      <div class="box-title">DashboardClient.tsx</div>
+      <div class="box-sub">
+        Normalized rank (primary)<br>
+        Win rate · Elo (secondary)<br>
+        Weekly best · cohorts · sessions
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="tag tag-purple">Internal</div>
+      <div class="box-title">BehaviorsClient / ExportClient</div>
+      <div class="box-sub">
+        Flag matrix · rank drift<br>
+        JSONL / JSON / CSV export<br>
+        @fleet.so gated
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- arrows -->
+<div class="arrows">
+  <div class="arrow">
+    <div class="arrow-label">HTTPS fetch · JSON</div>
+    <div class="arrow-line"></div>
+  </div>
+  <div class="arrow">
+    <div class="arrow-label">SSE · text/event-stream</div>
+    <div class="arrow-line"></div>
+  </div>
+  <div class="arrow">
+    <div class="arrow-label">sendBeacon · beforeunload</div>
+    <div class="arrow-line"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ SERVER LAYER -->
+<div class="layer layer-server">
+  <div class="layer-label c-purple">Next.js 14 App Router · Vercel Serverless · Edge</div>
+
+  <div style="margin-bottom: 10px;">
+    <div class="box" style="border-color: rgba(192,132,252,0.3); background: rgba(192,132,252,0.05);">
+      <div class="box-title">middleware.ts — every request</div>
+      <div class="box-sub">
+        <span>/arena /history</span> → auth required → redirect /login &nbsp;|&nbsp;
+        <span>/dashboard/**</span> → @fleet.so required → redirect /login?reason=internal &nbsp;|&nbsp;
+        <span>/api/stream /api/rankings /api/sessions/**</span> → 401 JSON if no session &nbsp;|&nbsp;
+        <span>/api/internal/**</span> → 403 if not @fleet.so &nbsp;|&nbsp;
+        <span>/login</span> → redirect /arena if already authed
+      </div>
+    </div>
+  </div>
+
+  <div class="grid g4" style="margin-bottom: 12px;">
+
+    <div class="box">
+      <div class="tag tag-purple">POST · Edge</div>
+      <div class="box-title">/api/stream</div>
+      <div class="box-sub">
+        Upstash rate limit (20/min/IP)<br>
+        Round-robin OpenRouter keys<br>
+        N concurrent fetches · SSE bridge<br>
+        90s timeout · retry 429/503<br>
+        INSERT responses (content, latency, tokens)
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="tag tag-purple">POST/PATCH</div>
+      <div class="box-title">/api/sessions</div>
+      <div class="box-sub">
+        POST → INSERT session + upsert profile<br>
+        PATCH → enqueue Inngest job<br>
+        /turns → INSERT turn row<br>
+        /resume → load full session state<br>
+        /complete → sendBeacon handler
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="tag tag-purple">POST</div>
+      <div class="box-title">/api/rankings</div>
+      <div class="box-sub">
+        slot label → model_id (via session order)<br>
+        model_id → response_id (DB lookup)<br>
+        INSERT rankings rows<br>
+        UPDATE turns.ranking_submitted<br>
+        RPC increment_profile_rankings<br>
+        Return revealed model identities
+      </div>
+    </div>
+
+    <div class="box">
+      <div class="tag tag-yellow">GET · 5m cache</div>
+      <div class="box-title">/api/internal/stats</div>
+      <div class="box-sub">
+        Normalized rank (primary metric)<br>
+        Win rate · Elo (weighted K/numPairs)<br>
+        Weekly best by norm rank<br>
+        Refusal rate · user cohorts<br>
+        Turn-wise analytics · session trends
+      </div>
+    </div>
+
+  </div>
+
+  <div class="grid g3">
+    <div class="box">
+      <div class="tag tag-yellow">GET · Internal</div>
+      <div class="box-title">/api/internal/behaviors</div>
+      <div class="box-sub">
+        Flag matrix per model<br>
+        Rank drift analysis (avgDelta)<br>
+        Severity breakdown · recent flags
+      </div>
+    </div>
+    <div class="box">
+      <div class="tag tag-yellow">GET · Internal</div>
+      <div class="box-title">/api/internal/export</div>
+      <div class="box-sub">
+        <span>preference_pairs</span> → JSONL (RLHF)<br>
+        <span>trajectories</span> → JSON (multi-turn)<br>
+        <span>behavioral_flags</span> → CSV<br>
+        <span>user_cohorts</span> → CSV<br>
+        select("*") on all tables (schema drift safe)
+      </div>
+    </div>
+    <div class="box">
+      <div class="tag tag-yellow">POST · Webhook</div>
+      <div class="box-title">/api/inngest</div>
+      <div class="box-sub">
+        Inngest event receiver<br>
+        Routes: analyzeSession · backfillAnalysis<br>
+        Validates Inngest signature
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- arrows -->
+<div class="arrows">
+  <div class="arrow">
+    <div class="arrow-label">PostgREST (HTTPS)</div>
+    <div class="arrow-line"></div>
+  </div>
+  <div class="arrow">
+    <div class="arrow-label">OpenRouter API</div>
+    <div class="arrow-line"></div>
+  </div>
+  <div class="arrow">
+    <div class="arrow-label">Inngest events</div>
+    <div class="arrow-line"></div>
+  </div>
+  <div class="arrow">
+    <div class="arrow-label">Upstash Redis</div>
+    <div class="arrow-line"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ EXTERNAL LAYER -->
+<div class="grid g4" style="margin-bottom: 16px; gap: 12px;">
+
+  <div class="layer layer-external" style="margin:0; padding: 18px;">
+    <div class="layer-label c-green">Database + Auth</div>
+    <div class="box">
+      <div class="tag tag-green">Supabase</div>
+      <div class="box-title">PostgreSQL + PostgREST + Auth</div>
+      <div class="box-sub">
+        6 tables · RLS policies<br>
+        Auth: email/password · OTP<br>
+        RPC: increment_profile_{sessions,rankings}<br>
+        SSR cookie integration (@supabase/ssr)<br>
+        Service client (singleton, no cookies)<br>
+        User client (per-request, cookie-bound)
+      </div>
+    </div>
+  </div>
+
+  <div class="layer layer-external" style="margin:0; padding: 18px;">
+    <div class="layer-label c-green">LLM Gateway</div>
+    <div class="box">
+      <div class="tag tag-green">OpenRouter</div>
+      <div class="box-title">15 frontier models · one endpoint</div>
+      <div class="box-sub">
+        Claude Opus/Sonnet/Haiku 4.x<br>
+        GPT-4.1 · o3 · o4-mini<br>
+        Gemini 2.5 Pro<br>
+        Llama 3.3 70B · Grok 3<br>
+        DeepSeek V3 · Mistral Large<br>
+        Round-robin key rotation
+      </div>
+    </div>
+  </div>
+
+  <div class="layer layer-async" style="margin:0; padding: 18px;">
+    <div class="layer-label c-yellow">Async Jobs</div>
+    <div class="box">
+      <div class="tag tag-yellow">Inngest</div>
+      <div class="box-title">analyzeSessionFn</div>
+      <div class="box-sub">
+        Triggered: arena/session.completed<br>
+        Step 1: Load turns/responses/rankings<br>
+        Step 2: Claude Sonnet 4.6 judge<br>
+        Step 3: Write behavioral_flags<br>
+        3 retries · dedup by sessionId<br>
+        backfillFn: cron every 6h
+      </div>
+    </div>
+  </div>
+
+  <div class="layer layer-external" style="margin:0; padding: 18px;">
+    <div class="layer-label c-green">Rate Limiting</div>
+    <div class="box">
+      <div class="tag tag-green">Upstash Redis</div>
+      <div class="box-title">Global sliding window</div>
+      <div class="box-sub">
+        20 req/min per IP on /api/stream<br>
+        Shared across Vercel instances<br>
+        Fallback: in-memory (local dev)<br>
+        @upstash/ratelimit SDK
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="divider"></div>
+
+<!-- ═══════════════════════════════════════════════════════ DB SCHEMA -->
+<div style="margin-bottom: 40px;">
+  <div class="flow-title">Database Schema</div>
+  <div class="schema-grid">
+
+    <div class="schema-table">
+      <div class="schema-table-name">profiles</div>
+      <div class="schema-col">
+        <span class="pk">id</span> uuid pk (= auth.users.id)<br>
+        email, display_name text<br>
+        is_internal bool<br>
+        total_sessions, total_rankings int<br>
+        first_seen_at, last_seen_at timestamptz
+      </div>
+    </div>
+
+    <div class="schema-table">
+      <div class="schema-table-name">sessions</div>
+      <div class="schema-col">
+        <span class="pk">id</span> uuid pk<br>
+        <span class="fk">user_id</span> → auth.users<br>
+        model_ids text[] <span class="type">// slot order</span><br>
+        is_complete bool<br>
+        turn_count, analyzed_turn_count int<br>
+        created_at, completed_at timestamptz
+      </div>
+    </div>
+
+    <div class="schema-table">
+      <div class="schema-table-name">turns</div>
+      <div class="schema-col">
+        <span class="pk">id</span> uuid pk<br>
+        <span class="fk">session_id</span> → sessions (cascade)<br>
+        turn_number int<br>
+        prompt text<br>
+        ranking_submitted bool<br>
+        created_at timestamptz
+      </div>
+    </div>
+
+    <div class="schema-table">
+      <div class="schema-table-name">responses</div>
+      <div class="schema-col">
+        <span class="pk">id</span> uuid pk<br>
+        <span class="fk">turn_id</span> → turns (cascade)<br>
+        <span class="fk">session_id</span> → sessions (denorm)<br>
+        model_id text<br>
+        content text<br>
+        latency_ms, token_count int<br>
+        finish_reason text
+      </div>
+    </div>
+
+    <div class="schema-table">
+      <div class="schema-table-name">rankings</div>
+      <div class="schema-col">
+        <span class="pk">id</span> uuid pk<br>
+        <span class="fk">turn_id</span> → turns (cascade)<br>
+        <span class="fk">response_id</span> → responses (cascade)<br>
+        <span class="fk">user_id</span> → auth.users<br>
+        rank int <span class="type">// 1=best</span><br>
+        created_at timestamptz
+      </div>
+    </div>
+
+    <div class="schema-table">
+      <div class="schema-table-name">behavioral_flags</div>
+      <div class="schema-col">
+        <span class="pk">id</span> uuid pk<br>
+        <span class="fk">session_id</span> → sessions (cascade)<br>
+        model_id text<br>
+        flag_type text <span class="type">// refusal|context_loss|...</span><br>
+        severity text <span class="type">// low|medium|high</span><br>
+        confidence float<br>
+        description text · evidence jsonb
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<!-- ═══════════════════════════════════════════════════════ DATA FLOW -->
+<div class="two-col" style="margin-bottom: 40px;">
+  <div>
+    <div class="flow-title">One Turn — Data Flow</div>
+
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div class="flow-text"><strong>Session start</strong> — <code>POST /api/sessions</code> → INSERT sessions + upsert profiles, return sessionId</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div class="flow-text"><strong>Submit prompt</strong> — <code>POST /api/sessions/turns</code> → INSERT turn, return turnId</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div class="flow-text"><strong>Stream responses</strong> — N concurrent <code>POST /api/stream</code> calls (one per model) → SSE bridge to OpenRouter → deltas paint ResponseCard → INSERT response row on done</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <div class="flow-text"><strong>Rank turn</strong> — user clicks 1/2/3 per slot (blind) → <code>POST /api/rankings</code> → slot→modelId→responseId mapping → INSERT rankings → return model identities (reveal)</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">5</div>
+      <div class="flow-text"><strong>Multi-turn context</strong> — next prompt includes rank=1 response from prior turn as assistant message (best-winner thread)</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">6</div>
+      <div class="flow-text"><strong>Session end</strong> — beforeunload <code>sendBeacon</code> → <code>/api/sessions/complete</code> → Inngest enqueue <code>arena/session.completed</code></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">7</div>
+      <div class="flow-text"><strong>Behavioral analysis</strong> — Inngest runs Claude Sonnet 4.6 judge on full session → INSERT behavioral_flags (refusal, sycophancy, context_loss, verbosity, rank_reversal)</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">8</div>
+      <div class="flow-text"><strong>Analytics</strong> — <code>GET /api/internal/stats</code> (5m cache) aggregates normalized rank, Elo, win rates, weekly best, user cohorts from DB</div>
+    </div>
+  </div>
+
+  <div>
+    <div class="flow-title">Key Architecture Decisions</div>
+
+    <div class="decision">
+      <div class="decision-title">Normalized rank as primary metric</div>
+      <div class="decision-body"><strong>(N - rank) / (N - 1)</strong> gives a 0–1 score comparable across 2-way and 8-way sessions. Win rate is biased by session size (50% baseline in 2-way vs 12.5% in 8-way). Elo is order-dependent and needs dense data. Normalized rank uses all positions, not just #1.</div>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">Blind ranking → server-side reveal</div>
+      <div class="decision-body">Slot labels (A/B/C) shown during ranking. Model identity only returned from <strong>/api/rankings</strong> after submission. The slot→model mapping lives in <strong>session.model_ids[]</strong> server-side only — client can't cheat the blind.</div>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">select("*") on all analytics queries</div>
+      <div class="decision-body">PostgREST returns <strong>{ data: null }</strong> silently when any explicitly named column doesn't exist. The live DB was created before migration additions (e.g. ranking_submitted, completed_at). select("*") sidesteps schema drift.</div>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">Full-table fetch, no IN clause</div>
+      <div class="decision-body">PostgREST translates <strong>.in("session_id", ids)</strong> to a URL query string. With many IDs this exceeds length limits and silently returns null. Export and stats routes fetch full tables (50k limit) and filter in JS.</div>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">Inngest for async behavioral analysis</div>
+      <div class="decision-body">Judge (Claude 4.6) call is outside the request path. /api/rankings stays fast. Inngest provides retries, dedup by sessionId, and a 6h cron backfill for sessions whose sendBeacon failed silently.</div>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">JSONL for preference pair export</div>
+      <div class="decision-body">Each line is self-contained. HuggingFace datasets, TRL, and OpenAI fine-tuning all consume JSONL natively. Streamable, composable with cat, no full-file parse needed. Trajectories use JSON (human inspection target).</div>
+    </div>
+
+    <div class="decision">
+      <div class="decision-title">Upstash Redis rate limiting</div>
+      <div class="decision-body">Vercel runs multiple serverless instances — in-memory rate limits are per-instance and useless globally. Upstash provides a shared atomic sliding window counter across all instances. Falls back to in-memory for local dev.</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ RANKING METRICS -->
+<div class="divider"></div>
+<div class="flow-title">Ranking Metric Comparison</div>
+<div class="three-col">
+
+  <div class="box" style="border-color: rgba(52,211,153,0.3);">
+    <div class="tag tag-green">PRIMARY</div>
+    <div class="box-title c-green">Normalized Rank Score</div>
+    <div class="box-sub" style="margin-top: 8px;">
+      Formula: <span>(N - rank) / (N - 1)</span><br>
+      Range: 0.000 (always last) → 1.000 (always first)<br><br>
+      ✓ Uses all rank positions, not just #1<br>
+      ✓ Comparable across 2-way and 8-way<br>
+      ✓ Deterministic · no order dependence<br>
+      ✓ Each turn = one data point regardless of N<br><br>
+      Used for: overall rankings, weekly best model
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="tag tag-blue">SECONDARY</div>
+    <div class="box-title">Win Rate</div>
+    <div class="box-sub" style="margin-top: 8px;">
+      Formula: <span>rank-1 count / total ranked turns</span><br>
+      Range: 0% → 100%<br><br>
+      ✓ Instantly intuitive<br>
+      ✗ Only rewards #1, ignores all other info<br>
+      ✗ Biased by session size (50% base in 2-way<br>
+        &nbsp;&nbsp;vs 12.5% in 8-way)<br>
+      ✗ Model always 2nd looks same as always last<br><br>
+      Shown for reference only
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="tag tag-purple">SECONDARY</div>
+    <div class="box-title">Elo Rating</div>
+    <div class="box-sub" style="margin-top: 8px;">
+      Formula: <span>pairwise · K=32 · base 1500</span><br>
+      Range: ~1400 → ~1600 (at this data scale)<br><br>
+      ✓ Accounts for opponent strength<br>
+      ✓ K/numPairs normalizes 2-way vs N-way<br>
+      ✗ Order-dependent (processing order matters)<br>
+      ✗ Needs dense data to converge reliably<br>
+      ✗ Results change if sessions reordered<br><br>
+      Shown for reference only
+    </div>
+  </div>
+
+</div>
+
+<footer>FLEET ARENA · INTERNAL · fleet.so · generated {DATE}</footer>
+
+<script>
+  document.querySelector('footer').textContent =
+    'FLEET ARENA · INTERNAL · fleet.so · ' +
+    new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+</script>
+
+</body>
+</html>
