@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
-const SLOTS = ["A", "B", "C"];
+const SLOTS = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -19,40 +19,20 @@ function csvEscape(val: unknown): string {
 }
 
 /**
- * Load turns/responses/rankings for a given set of session IDs.
- * Filters at the DB level — avoids fetching all rows and hitting
- * PostgREST's default 1000-row limit.
- * responses.session_id may not exist in the live DB schema, so we
- * filter responses and rankings by turn_id instead.
+ * Load all turns/responses/rankings without IN-clause filtering.
+ * Using .in("session_id", sessionIds) with many IDs creates a URL
+ * that exceeds PostgREST's query-string limits and silently returns
+ * null. Fetching full tables with high limits is simpler and safe
+ * at this scale.
  */
-async function loadSessionData(
-  supabase: ReturnType<typeof createServiceClient>,
-  sessionIds: string[],
-) {
-  if (sessionIds.length === 0) return { turns: [], responses: [], rankings: [] };
-
-  const { data: turns } = await supabase
-    .from("turns")
-    .select("id, session_id, turn_number, prompt, ranking_submitted")
-    .in("session_id", sessionIds)
-    .limit(10000);
-
-  const turnIds = (turns ?? []).map(t => t.id);
-  if (turnIds.length === 0) return { turns: turns ?? [], responses: [], rankings: [] };
-
-  const [{ data: responses }, { data: rankings }] = await Promise.all([
-    supabase
-      .from("responses")
-      .select("id, turn_id, model_id, content, token_count, latency_ms, finish_reason")
-      .in("turn_id", turnIds)
-      .limit(10000),
-    supabase
-      .from("rankings")
-      .select("response_id, rank, turn_id")
-      .in("turn_id", turnIds)
-      .limit(10000),
+async function loadAllData(supabase: ReturnType<typeof createServiceClient>) {
+  // select("*") avoids silent failures when optional columns (ranking_submitted,
+  // latency_ms, etc.) don't exist yet in the live DB schema.
+  const [{ data: turns }, { data: responses }, { data: rankings }] = await Promise.all([
+    supabase.from("turns").select("*").limit(50000),
+    supabase.from("responses").select("*").limit(50000),
+    supabase.from("rankings").select("*").limit(50000),
   ]);
-
   return { turns: turns ?? [], responses: responses ?? [], rankings: rankings ?? [] };
 }
 
@@ -66,30 +46,34 @@ export async function GET(req: NextRequest) {
 
   // ── Preference Pairs (JSONL) ────────────────────────────────────────────────
   if (format === "preference_pairs") {
+    // No is_complete filter — sessions are marked complete via sendBeacon which
+    // can fail silently. Quality gate is the turnRankings.length < 2 check below.
     const { data: sessions } = await supabase
       .from("sessions")
       .select("id, model_ids")
-      .eq("is_complete", true)
       .limit(5000);
 
     const sessionModelIds: Record<string, string[]> = {};
     (sessions ?? []).forEach(s => { sessionModelIds[s.id] = s.model_ids; });
-    const sessionIds = Object.keys(sessionModelIds);
 
-    const { turns, responses, rankings } = await loadSessionData(supabase, sessionIds);
+    const { turns, responses, rankings } = await loadAllData(supabase);
 
     const lines: string[] = [];
 
     turns.forEach(turn => {
       const turnResponses = responses.filter(r => r.turn_id === turn.id);
       const turnRankings = rankings.filter(rk => rk.turn_id === turn.id);
-      if (turnRankings.length < 2) return;
 
       const modelIds = sessionModelIds[turn.session_id] ?? [];
+      // Match each response to its ranking row by response_id.
+      // Filter AFTER matching — avoids skipping turns where one model errored
+      // (error → no response row → only 1 ranking stored, turnRankings.length < 2).
       const ranked = turnResponses
         .map(r => ({ ...r, rank: turnRankings.find(rk => rk.response_id === r.id)?.rank ?? null }))
         .filter(r => r.rank !== null)
         .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+
+      if (ranked.length < 2) return;  // need at least 2 to form a pair
 
       // All pairwise (chosen > rejected) combinations
       for (let i = 0; i < ranked.length; i++) {
@@ -128,14 +112,14 @@ export async function GET(req: NextRequest) {
 
   // ── Multi-turn Trajectories (JSON) ──────────────────────────────────────────
   if (format === "trajectories") {
+    // No is_complete filter — same reasoning as preference_pairs above.
+    // Sessions without turns produce empty turn arrays and are harmless.
     const { data: sessions } = await supabase
       .from("sessions")
-      .select("id, model_ids, created_at, completed_at")
-      .eq("is_complete", true)
+      .select("id, model_ids, created_at, is_complete")
       .limit(5000);
 
-    const sessionIds = (sessions ?? []).map(s => s.id);
-    const { turns, responses, rankings } = await loadSessionData(supabase, sessionIds);
+    const { turns, responses, rankings } = await loadAllData(supabase);
 
     const output = (sessions ?? []).map(session => {
       const sessionTurns = turns
@@ -145,8 +129,8 @@ export async function GET(req: NextRequest) {
       return {
         session_id: session.id,
         model_ids: session.model_ids,
+        is_complete: session.is_complete,
         created_at: session.created_at,
-        completed_at: session.completed_at,
         turns: sessionTurns.map(turn => {
           const turnResponses = responses.filter(r => r.turn_id === turn.id);
           const turnRankings = rankings.filter(rk => rk.turn_id === turn.id);

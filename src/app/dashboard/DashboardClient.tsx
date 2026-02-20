@@ -5,10 +5,14 @@ import { MODELS } from "@/lib/models";
 
 type TurnAnalyticsEntry = {
   model: string;
-  byTurn: { turn: number; avgRank: number; count: number }[];
+  byTurn: { turn: number; avgRank: number; avgNormalizedRank?: number; count: number }[];
 };
 
 type EloEntry = { model: string; rating: number };
+
+type NormalizedRankEntry = { model: string; avgNormalized: string; turns: number };
+
+type WeeklyBestEntry = { weekStart: string; model: string; avgNormalized: number; total: number };
 
 type Stats = {
   totalSessions: number;
@@ -16,11 +20,12 @@ type Stats = {
   totalUsers: number;
   refusalRate: string;
   winRates: { model: string; wins: number; pct: number }[];
-  bestModelWeek: { model: string; wins: number; pct: number } | null;
+  weeklyBestModels: WeeklyBestEntry[];
   userCohorts: { returningUsers: number; firstTimeUsers: number };
   sessionsByDay: { date: string; count: number }[];
   turnAnalytics: TurnAnalyticsEntry[];
   eloRankings: EloEntry[];
+  normalizedRankings?: NormalizedRankEntry[];
 };
 
 export default function DashboardClient() {
@@ -54,37 +59,29 @@ export default function DashboardClient() {
               ))}
             </div>
 
-            {/* Best model this week */}
-            {stats.bestModelWeek && (() => {
-              const model = MODELS.find(m => m.id === stats.bestModelWeek!.model);
-              return (
-                <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: "14px 20px", marginBottom: 16, display: "flex", alignItems: "center", gap: 14 }}>
-                  <span style={{ fontSize: 10, letterSpacing: "1px", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", flexShrink: 0 }}>Best Model This Week</span>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: model?.color ?? "#4F8EF7", flexShrink: 0, display: "inline-block" }} />
-                  <span style={{ fontWeight: 700, fontSize: 13 }}>{model?.label ?? stats.bestModelWeek.model.split("/")[1]}</span>
-                  <span style={{ fontSize: 12, color: "var(--muted)" }}>{stats.bestModelWeek.wins} win{stats.bestModelWeek.wins !== 1 ? "s" : ""} · {stats.bestModelWeek.pct}% of ranked turns</span>
-                </div>
-              );
-            })()}
-
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-              {/* Win rates */}
+              {/* Normalized rank — primary ranking */}
               <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 16 }}>Win Rate by Model</div>
-                {stats.winRates.length === 0 ? (
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Model Rankings</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>Normalized rank · 0 = always last, 1 = always first · comparable across any # of models</div>
+                {!stats.normalizedRankings || stats.normalizedRankings.length === 0 ? (
                   <div style={{ fontSize: 13, color: "var(--muted)" }}>No ranked data yet.</div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    {stats.winRates.map(w => {
-                      const model = MODELS.find(m => m.id === w.model);
-                      const max = stats.winRates[0].pct;
+                    {stats.normalizedRankings.map((e, i) => {
+                      const model = MODELS.find(m => m.id === e.model);
+                      const score = parseFloat(String(e.avgNormalized));
                       return (
-                        <div key={w.model} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                          <div style={{ width: 110, fontSize: 12, color: "var(--muted)", textAlign: "right", flexShrink: 0 }}>{model?.label ?? w.model.split("/")[1]}</div>
-                          <div style={{ flex: 1, height: 8, background: "rgba(255,255,255,0.04)", borderRadius: 4, overflow: "hidden" }}>
-                            <div style={{ height: "100%", borderRadius: 4, width: (w.pct / max * 100) + "%", background: model?.color ?? "#4F8EF7", transition: "width 1s ease" }} />
+                        <div key={e.model} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div style={{ width: 20, fontSize: 10, color: "var(--muted)", fontFamily: "monospace", flexShrink: 0, textAlign: "right" }}>#{i + 1}</div>
+                          <div style={{ width: 100, fontSize: 12, color: "var(--muted)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {model?.label ?? e.model.split("/")[1]}
                           </div>
-                          <div style={{ width: 36, fontSize: 11, fontFamily: "monospace", color: "var(--muted)" }}>{w.pct}%</div>
+                          <div style={{ flex: 1, height: 8, background: "rgba(255,255,255,0.04)", borderRadius: 4, overflow: "hidden" }}>
+                            <div style={{ height: "100%", borderRadius: 4, width: (score * 100) + "%", background: model?.color ?? "#4F8EF7", transition: "width 1s ease" }} />
+                          </div>
+                          <div style={{ width: 44, fontSize: 11, fontFamily: "monospace", color: "var(--text)", textAlign: "right", flexShrink: 0 }}>{score.toFixed(3)}</div>
+                          <div style={{ width: 32, fontSize: 10, color: "var(--muted)", flexShrink: 0, textAlign: "right" }}>{e.turns}t</div>
                         </div>
                       );
                     })}
@@ -92,35 +89,61 @@ export default function DashboardClient() {
                 )}
               </div>
 
-              {/* Elo rankings */}
-              <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Elo Rankings</div>
-                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>Pairwise Elo · K=32 · base 1500</div>
-                {stats.eloRankings.length === 0 ? (
-                  <div style={{ fontSize: 13, color: "var(--muted)" }}>No ranked data yet.</div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {stats.eloRankings.map((e, i) => {
-                      const model = MODELS.find(m => m.id === e.model);
-                      const maxR = stats.eloRankings[0].rating;
-                      const minR = stats.eloRankings[stats.eloRankings.length - 1].rating;
-                      const range = Math.max(maxR - minR, 1);
-                      const pct = ((e.rating - minR) / range) * 100;
-                      return (
-                        <div key={e.model} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          <div style={{ width: 20, fontSize: 10, color: "var(--muted)", fontFamily: "monospace", flexShrink: 0, textAlign: "right" }}>#{i + 1}</div>
-                          <div style={{ width: 110, fontSize: 12, color: "var(--muted)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {model?.label ?? e.model.split("/")[1]}
+              {/* Win rate + Elo (right column, secondary context) */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {/* Win rates */}
+                <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Win Rate</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>% of turns ranked #1 · biased by session size, shown for reference</div>
+                  {stats.winRates.length === 0 ? (
+                    <div style={{ fontSize: 13, color: "var(--muted)" }}>No ranked data yet.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {stats.winRates.map(w => {
+                        const model = MODELS.find(m => m.id === w.model);
+                        const max = stats.winRates[0].pct;
+                        return (
+                          <div key={w.model} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ width: 90, fontSize: 12, color: "var(--muted)", textAlign: "right", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model?.label ?? w.model.split("/")[1]}</div>
+                            <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.04)", borderRadius: 3, overflow: "hidden" }}>
+                              <div style={{ height: "100%", borderRadius: 3, width: (w.pct / max * 100) + "%", background: model?.color ?? "#4F8EF7", transition: "width 1s ease" }} />
+                            </div>
+                            <div style={{ width: 36, fontSize: 11, fontFamily: "monospace", color: "var(--muted)" }}>{w.pct}%</div>
                           </div>
-                          <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.04)", borderRadius: 3, overflow: "hidden" }}>
-                            <div style={{ height: "100%", borderRadius: 3, width: pct + "%", background: model?.color ?? "#4F8EF7" }} />
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                {/* Elo rankings */}
+                <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Elo Rankings</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>Pairwise · K=32 normalized per turn · base 1500</div>
+                  {stats.eloRankings.length === 0 ? (
+                    <div style={{ fontSize: 13, color: "var(--muted)" }}>No ranked data yet.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {stats.eloRankings.map((e, i) => {
+                        const model = MODELS.find(m => m.id === e.model);
+                        const maxR = stats.eloRankings[0].rating;
+                        const minR = stats.eloRankings[stats.eloRankings.length - 1].rating;
+                        const pct = ((e.rating - minR) / Math.max(maxR - minR, 1)) * 100;
+                        return (
+                          <div key={e.model} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ width: 20, fontSize: 10, color: "var(--muted)", fontFamily: "monospace", flexShrink: 0, textAlign: "right" }}>#{i + 1}</div>
+                            <div style={{ width: 90, fontSize: 12, color: "var(--muted)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {model?.label ?? e.model.split("/")[1]}
+                            </div>
+                            <div style={{ flex: 1, height: 6, background: "rgba(255,255,255,0.04)", borderRadius: 3, overflow: "hidden" }}>
+                              <div style={{ height: "100%", borderRadius: 3, width: pct + "%", background: model?.color ?? "#4F8EF7" }} />
+                            </div>
+                            <div style={{ width: 40, fontSize: 11, fontFamily: "monospace", color: "var(--text)", textAlign: "right", flexShrink: 0 }}>{e.rating}</div>
                           </div>
-                          <div style={{ width: 40, fontSize: 11, fontFamily: "monospace", color: "var(--text)", textAlign: "right", flexShrink: 0 }}>{e.rating}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -153,10 +176,17 @@ export default function DashboardClient() {
             {stats.turnAnalytics.length > 0 && (
               <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20, marginBottom: 16 }}>
                 <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Turn-wise Performance</div>
-                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 16 }}>Average rank per model by turn number — lower is better. Hover cells for sample count.</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 16 }}>Raw average rank by turn position (lower = better). For cross-session comparisons, see Model Rankings above.</div>
                 <TurnChart data={stats.turnAnalytics} />
               </div>
             )}
+
+            {/* Weekly best model */}
+            <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Best Model by Week — {new Date().getFullYear()}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>Winner by highest average normalized rank score that week (0–1, higher = better).</div>
+              <WeeklyBestTable data={stats.weeklyBestModels} />
+            </div>
           </>
         )}
       </div>
@@ -224,6 +254,45 @@ function TurnChart({ data }: { data: TurnAnalyticsEntry[] }) {
                     </td>
                   );
                 })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function WeeklyBestTable({ data }: { data: WeeklyBestEntry[] }) {
+  if (data.length === 0) {
+    return <div style={{ fontSize: 13, color: "var(--muted)" }}>No ranked turns yet this year.</div>;
+  }
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr>
+            {["Week of", "Best Model", "Avg Score", "Turns"].map(h => (
+              <th key={h} style={{ textAlign: "left", padding: "6px 10px", color: "var(--muted)", fontWeight: 600, fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map(row => {
+            const model = MODELS.find(m => m.id === row.model);
+            const label = model?.label ?? row.model.split("/")[1];
+            const weekLabel = new Date(row.weekStart + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+            return (
+              <tr key={row.weekStart} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={{ padding: "8px 10px", color: "var(--muted)", fontFamily: "monospace", fontSize: 11 }}>{weekLabel}</td>
+                <td style={{ padding: "8px 10px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: model?.color ?? "#4F8EF7", flexShrink: 0, display: "inline-block" }} />
+                    <span style={{ fontWeight: 600 }}>{label}</span>
+                  </div>
+                </td>
+                <td style={{ padding: "8px 10px", fontFamily: "monospace" }}>{row.avgNormalized.toFixed(3)}</td>
+                <td style={{ padding: "8px 10px", fontFamily: "monospace", color: "var(--muted)" }}>{row.total}</td>
               </tr>
             );
           })}

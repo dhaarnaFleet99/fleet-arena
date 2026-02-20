@@ -25,14 +25,21 @@ export default async function HistoryPage({
 
   if (user) {
     const service = createServiceClient();
-    // turns(id) join gives us turn count per session.
-    // count: "exact" gives us total session count for pagination (counts the top-level rows).
-    const { data, count } = await service
-      .from("sessions")
-      .select("id, model_ids, is_complete, created_at, turns(id)", { count: "exact" })
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .range(offset, offset + PAGE_SIZE - 1);
+    // Two separate queries: count (head-only, no join) + paginated data with turns join.
+    // Combining count:"exact" with an embedded join can produce incorrect counts in
+    // PostgREST because the count may reflect joined rows rather than parent rows.
+    const [{ count }, { data }] = await Promise.all([
+      service
+        .from("sessions")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", user.id),
+      service
+        .from("sessions")
+        .select("id, model_ids, is_complete, created_at, turns(id)")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .range(offset, offset + PAGE_SIZE - 1),
+    ]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sessions = (data ?? []).map((s: any) => ({
@@ -51,11 +58,6 @@ export default async function HistoryPage({
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ height: 54, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", padding: "0 24px", background: "var(--surface)" }}>
           <span style={{ fontWeight: 800, fontSize: 14 }}>My Sessions</span>
-          {user && totalCount > 0 && (
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
-              {totalCount} session{totalCount !== 1 ? "s" : ""}
-            </span>
-          )}
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {!user ? (
@@ -70,6 +72,9 @@ export default async function HistoryPage({
             </div>
           ) : (
             <>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14, fontWeight: 600, letterSpacing: "0.5px", textTransform: "uppercase" }}>
+                {totalCount > 0 ? totalCount : sessions.length} session{(totalCount || sessions.length) !== 1 ? "s" : ""}
+              </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 700 }}>
                 {sessions.map(s => {
                   const modelLabels = s.model_ids.map(id => MODELS.find(m => m.id === id)?.label ?? id.split("/")[1]);
