@@ -43,6 +43,7 @@ create table if not exists sessions (
   model_ids text[] not null,
   is_complete boolean default false,
   turn_count int default 0,
+  analyzed_turn_count int,
   created_at timestamptz default now(),
   completed_at timestamptz,
   metadata jsonb default '{}'

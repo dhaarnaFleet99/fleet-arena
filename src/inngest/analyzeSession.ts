@@ -21,15 +21,10 @@ export const analyzeSessionFn = inngest.createFunction(
     // ── Step 1: Load data ─────────────────────────────────────────────────
     // Any throw here will retry up to 3 times with exponential backoff.
     // Returns null when there is nothing to analyze (idempotent skip).
+    // Re-run judge when the session has more/different turns than last analysis
+    // (e.g. user resumed, added turns, finished again).
     const sessionData = await step.run("load-session-data", async () => {
       const supabase = createEdgeServiceClient();
-
-      // Idempotency: if flags already exist, skip
-      const { count } = await supabase
-        .from("behavioral_flags")
-        .select("id", { count: "exact", head: true })
-        .eq("session_id", sessionId);
-      if ((count ?? 0) > 0) return null;
 
       const { data: turns, error: turnsErr } = await supabase
         .from("turns")
@@ -41,25 +36,48 @@ export const analyzeSessionFn = inngest.createFunction(
       if (!turns?.length) return null;
 
       const turnIds = turns.map((t: { id: string }) => t.id);
+      const currentTurnCount = turns.length;
+
+      const [
+        { count: flagCount },
+        { data: session, error: sessErr },
+      ] = await Promise.all([
+        supabase
+          .from("behavioral_flags")
+          .select("id", { count: "exact", head: true })
+          .eq("session_id", sessionId),
+        supabase
+          .from("sessions")
+          .select("model_ids, analyzed_turn_count")
+          .eq("id", sessionId)
+          .single(),
+      ]);
+
+      if (sessErr) console.warn(logTag, "could not load session", sessErr.message);
+
+      // Idempotency: skip only if we already analyzed this exact turn set.
+      // If user resumed and added turns, analyzed_turn_count will be less than current → re-analyze.
+      const analyzedTurnCount = (session as { analyzed_turn_count?: number } | null)?.analyzed_turn_count ?? null;
+      if ((flagCount ?? 0) > 0 && analyzedTurnCount === currentTurnCount) {
+        return null;
+      }
 
       const [
         { data: responses, error: respErr },
-        { data: session, error: sessErr },
         { data: rankings, error: rankErr },
       ] = await Promise.all([
         supabase.from("responses").select("*").in("turn_id", turnIds),
-        supabase.from("sessions").select("model_ids").eq("id", sessionId).single(),
         supabase.from("rankings").select("*").in("turn_id", turnIds),
       ]);
 
       if (respErr) throw new Error(`Load responses: ${respErr.message}`);
       if (rankErr) throw new Error(`Load rankings: ${rankErr.message}`);
-      if (sessErr) console.warn(logTag, "could not load session model_ids", sessErr.message);
 
       console.log(logTag, "data loaded", {
-        turns: turns.length,
+        turns: currentTurnCount,
         responses: responses?.length ?? 0,
         rankings: rankings?.length ?? 0,
+        reAnalyze: (flagCount ?? 0) > 0,
       });
 
       return { turns, responses: responses ?? [], rankings: rankings ?? [], session };
@@ -157,40 +175,55 @@ export const analyzeSessionFn = inngest.createFunction(
 
     // ── Step 3: Write flags ───────────────────────────────────────────────
     const flagCount: number = rawFlags?.length ?? 0;
+    const turnCount = sessionData.turns.length;
     await step.run("write-flags", async () => {
-      if (!flagCount) {
+      const supabase = createEdgeServiceClient();
+
+      // Replace any existing flags for this session (re-analysis after resume + more turns).
+      const { error: deleteErr } = await supabase
+        .from("behavioral_flags")
+        .delete()
+        .eq("session_id", sessionId);
+      if (deleteErr) throw new Error(`Delete old flags: ${deleteErr.message}`);
+
+      if (flagCount > 0) {
+        const rows = (rawFlags as Array<{
+          model_id: string;
+          turn_id: string | null;
+          flag_type: string;
+          severity: string;
+          description: string;
+          evidence: object;
+          confidence: number;
+        }>).map(f => ({
+          session_id: sessionId,
+          turn_id: f.turn_id ?? null,
+          model_id: f.model_id,
+          flag_type: f.flag_type,
+          severity: f.severity,
+          description: f.description,
+          evidence: f.evidence,
+          confidence: f.confidence,
+        }));
+
+        const { error } = await supabase.from("behavioral_flags").insert(rows);
+        if (error) throw new Error(`Insert flags: ${error.message}`);
+
+        console.log(logTag, "flags written", {
+          count: rows.length,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          types: rawFlags.map((f: any) => f.flag_type),
+        });
+      } else {
         console.log(logTag, "no flags detected");
-        return;
       }
 
-      const supabase = createEdgeServiceClient();
-      const rows = (rawFlags as Array<{
-        model_id: string;
-        turn_id: string | null;
-        flag_type: string;
-        severity: string;
-        description: string;
-        evidence: object;
-        confidence: number;
-      }>).map(f => ({
-        session_id: sessionId,
-        turn_id: f.turn_id ?? null,
-        model_id: f.model_id,
-        flag_type: f.flag_type,
-        severity: f.severity,
-        description: f.description,
-        evidence: f.evidence,
-        confidence: f.confidence,
-      }));
-
-      const { error } = await supabase.from("behavioral_flags").insert(rows);
-      if (error) throw new Error(`Insert flags: ${error.message}`);
-
-      console.log(logTag, "flags written", {
-        count: rows.length,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        types: rawFlags.map((f: any) => f.flag_type),
-      });
+      // Record how many turns we analyzed so we only re-run when the session grows.
+      const { error: updateErr } = await supabase
+        .from("sessions")
+        .update({ analyzed_turn_count: turnCount })
+        .eq("id", sessionId);
+      if (updateErr) throw new Error(`Update analyzed_turn_count: ${updateErr.message}`);
     });
 
     return { flagsWritten: flagCount };

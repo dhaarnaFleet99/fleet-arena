@@ -25,16 +25,20 @@ export default async function HistoryPage({
 
   if (user) {
     const service = createServiceClient();
-    // Use turn_count from sessions directly — kept in sync by /api/sessions/turns.
-    // No join needed; avoids loading all turn IDs just to count them.
+    // turns(id) join gives us turn count per session.
+    // count: "exact" gives us total session count for pagination (counts the top-level rows).
     const { data, count } = await service
       .from("sessions")
-      .select("id, model_ids, is_complete, turn_count, created_at", { count: "exact" })
+      .select("id, model_ids, is_complete, created_at, turns(id)", { count: "exact" })
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
 
-    sessions = data ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sessions = (data ?? []).map((s: any) => ({
+      ...s,
+      turn_count: s.turns?.length ?? 0,
+    }));
     totalCount = count ?? 0;
   }
 

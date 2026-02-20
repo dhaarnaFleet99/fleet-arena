@@ -10,51 +10,75 @@ const getCachedStats = unstable_cache(
   async () => {
     const supabase = createServiceClient();
 
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
     const [
       { count: totalSessions },
       { count: totalTurns },
-      { count: refusals },
       { count: totalUsers },
       { data: rankOnes },
-      { data: responses },
+      { data: responses },        // all responses — needed for responseId→modelId map
       { data: profiles },
       { data: recentSessions },
       { data: allRankings },
       { data: allTurns },
+      { data: refusalFlags },     // behavioral flags — accurate refusal detection
+      { data: weekRankOnes },     // rank-1s in last 7 days for "best model this week"
     ] = await Promise.all([
       supabase.from("sessions").select("*", { count: "exact", head: true }),
       supabase.from("turns").select("*", { count: "exact", head: true }),
-      supabase.from("responses").select("*", { count: "exact", head: true }).eq("finish_reason", "content_filter"),
       supabase.from("profiles").select("*", { count: "exact", head: true }),
-      supabase.from("rankings").select("response_id, rank").eq("rank", 1),
-      supabase.from("responses").select("id, model_id"),
-      supabase.from("profiles").select("total_sessions, total_rankings, first_seen_at").order("total_sessions", { ascending: false }).limit(100),
-      supabase.from("sessions").select("created_at, user_id").order("created_at", { ascending: false }).limit(200),
-      supabase.from("rankings").select("response_id, rank, turn_id"),
-      supabase.from("turns").select("id, turn_number"),
+      supabase.from("rankings").select("response_id, rank").eq("rank", 1).limit(10000),
+      supabase.from("responses").select("id, model_id").limit(10000),
+      supabase.from("profiles").select("total_sessions, first_seen_at").order("total_sessions", { ascending: false }).limit(10000),
+      supabase.from("sessions").select("created_at").order("created_at", { ascending: false }).limit(2000),
+      supabase.from("rankings").select("response_id, rank, turn_id").limit(10000),
+      supabase.from("turns").select("id, turn_number").limit(10000),
+      // Refusal flags from Inngest judge — accurate; finish_reason=content_filter is almost never set.
+      supabase.from("behavioral_flags").select("session_id").eq("flag_type", "refusal").limit(10000),
+      // Last 7 days rank-1s for "best model this week"
+      supabase.from("rankings").select("response_id, rank").eq("rank", 1).gte("created_at", sevenDaysAgo).limit(2000),
     ]);
 
     // responseId → modelId map
     const modelMap: Record<string, string> = {};
     responses?.forEach(r => { modelMap[r.id] = r.model_id; });
 
-    // ── Win rates ──────────────────────────────────────────────────────────
+    // ── Win rates (all time) ───────────────────────────────────────────────
     const wins: Record<string, number> = {};
     rankOnes?.forEach(r => {
       const mid = modelMap[r.response_id];
       if (mid) wins[mid] = (wins[mid] ?? 0) + 1;
     });
-    const totalRanked = rankOnes?.length ?? 1;
+    const totalRankedTurns = rankOnes?.length ?? 1;
     const winRates = Object.entries(wins)
-      .map(([model, count]) => ({ model, wins: count, pct: Math.round((count / totalRanked) * 100) }))
+      .map(([model, count]) => ({ model, wins: count, pct: Math.round((count / totalRankedTurns) * 100) }))
       .sort((a, b) => b.pct - a.pct);
+
+    // ── Best model last 7 days ─────────────────────────────────────────────
+    const weekWins: Record<string, number> = {};
+    weekRankOnes?.forEach(r => {
+      const mid = modelMap[r.response_id];
+      if (mid) weekWins[mid] = (weekWins[mid] ?? 0) + 1;
+    });
+    const weekTotal = weekRankOnes?.length ?? 0;
+    const bestModelWeek = weekTotal === 0
+      ? null
+      : Object.entries(weekWins)
+          .map(([model, count]) => ({ model, wins: count, pct: Math.round((count / weekTotal) * 100) }))
+          .sort((a, b) => b.pct - a.pct)[0] ?? null;
+
+    // ── Refusal rate ───────────────────────────────────────────────────────
+    // Counted from behavioral_flags (flag_type='refusal') not finish_reason,
+    // because models that refuse in-content still return finish_reason='stop'.
+    const refusalCount = refusalFlags?.length ?? 0;
+    const refusalRate = totalSessions
+      ? ((refusalCount / (totalSessions as number)) * 100).toFixed(1)
+      : "0.0";
 
     // ── User cohort analysis ───────────────────────────────────────────────
     const returningUsers = profiles?.filter(p => p.total_sessions > 1).length ?? 0;
     const firstTimeUsers = (profiles?.length ?? 0) - returningUsers;
-    const avgRankingsPerUser = profiles?.length
-      ? (profiles.reduce((s, p) => s + (p.total_rankings ?? 0), 0) / profiles.length).toFixed(1)
-      : "0";
 
     // ── Sessions over time (last 30 days) ─────────────────────────────────
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -131,15 +155,16 @@ const getCachedStats = unstable_cache(
       totalSessions: totalSessions ?? 0,
       totalPrompts: totalTurns ?? 0,
       totalUsers: totalUsers ?? 0,
-      refusalRate: totalTurns ? ((refusals ?? 0) / ((totalTurns ?? 1) * 3) * 100).toFixed(1) : "0.0",
+      refusalRate,
       winRates,
-      userCohorts: { returningUsers, firstTimeUsers, avgRankingsPerUser },
+      bestModelWeek,
+      userCohorts: { returningUsers, firstTimeUsers },
       sessionsByDay,
       turnAnalytics,
       eloRankings,
     };
   },
-  ["internal-stats"], // global cache key — stats are not per-user
+  ["internal-stats"],
   { revalidate: 300 } // 5-minute TTL
 );
 

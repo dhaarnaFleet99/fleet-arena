@@ -16,7 +16,8 @@ type Stats = {
   totalUsers: number;
   refusalRate: string;
   winRates: { model: string; wins: number; pct: number }[];
-  userCohorts: { returningUsers: number; firstTimeUsers: number; avgRankingsPerUser: string };
+  bestModelWeek: { model: string; wins: number; pct: number } | null;
+  userCohorts: { returningUsers: number; firstTimeUsers: number };
   sessionsByDay: { date: string; count: number }[];
   turnAnalytics: TurnAnalyticsEntry[];
   eloRankings: EloEntry[];
@@ -43,14 +44,28 @@ export default function DashboardClient() {
                 { label: "Total Sessions", value: stats.totalSessions.toLocaleString() },
                 { label: "Prompts Evaluated", value: stats.totalPrompts.toLocaleString() },
                 { label: "Total Users", value: stats.totalUsers.toLocaleString() },
-                { label: "Refusal Rate", value: stats.refusalRate + "%" },
+                { label: "Refusal Rate", value: stats.refusalRate + "%", sub: "per session, judge-detected" },
               ].map(c => (
                 <div key={c.label} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: "18px 20px" }}>
                   <div style={{ fontSize: 10, letterSpacing: "1px", color: "var(--muted)", fontWeight: 600, marginBottom: 10, textTransform: "uppercase" }}>{c.label}</div>
                   <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-1px" }}>{c.value}</div>
+                  {"sub" in c && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{c.sub}</div>}
                 </div>
               ))}
             </div>
+
+            {/* Best model this week */}
+            {stats.bestModelWeek && (() => {
+              const model = MODELS.find(m => m.id === stats.bestModelWeek!.model);
+              return (
+                <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: "14px 20px", marginBottom: 16, display: "flex", alignItems: "center", gap: 14 }}>
+                  <span style={{ fontSize: 10, letterSpacing: "1px", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", flexShrink: 0 }}>Best Model This Week</span>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: model?.color ?? "#4F8EF7", flexShrink: 0, display: "inline-block" }} />
+                  <span style={{ fontWeight: 700, fontSize: 13 }}>{model?.label ?? stats.bestModelWeek.model.split("/")[1]}</span>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>{stats.bestModelWeek.wins} win{stats.bestModelWeek.wins !== 1 ? "s" : ""} · {stats.bestModelWeek.pct}% of ranked turns</span>
+                </div>
+              );
+            })()}
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
               {/* Win rates */}
@@ -117,7 +132,6 @@ export default function DashboardClient() {
                   {[
                     { label: "First-time users", value: stats.userCohorts.firstTimeUsers, color: "var(--accent)" },
                     { label: "Returning users", value: stats.userCohorts.returningUsers, color: "var(--success)" },
-                    { label: "Avg rankings/user", value: stats.userCohorts.avgRankingsPerUser, color: "var(--accent2)" },
                   ].map(c => (
                     <div key={c.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{ fontSize: 12, color: "var(--muted)" }}>{c.label}</span>

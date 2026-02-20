@@ -18,6 +18,44 @@ function csvEscape(val: unknown): string {
   return s;
 }
 
+/**
+ * Load turns/responses/rankings for a given set of session IDs.
+ * Filters at the DB level — avoids fetching all rows and hitting
+ * PostgREST's default 1000-row limit.
+ * responses.session_id may not exist in the live DB schema, so we
+ * filter responses and rankings by turn_id instead.
+ */
+async function loadSessionData(
+  supabase: ReturnType<typeof createServiceClient>,
+  sessionIds: string[],
+) {
+  if (sessionIds.length === 0) return { turns: [], responses: [], rankings: [] };
+
+  const { data: turns } = await supabase
+    .from("turns")
+    .select("id, session_id, turn_number, prompt, ranking_submitted")
+    .in("session_id", sessionIds)
+    .limit(10000);
+
+  const turnIds = (turns ?? []).map(t => t.id);
+  if (turnIds.length === 0) return { turns: turns ?? [], responses: [], rankings: [] };
+
+  const [{ data: responses }, { data: rankings }] = await Promise.all([
+    supabase
+      .from("responses")
+      .select("id, turn_id, model_id, content, token_count, latency_ms, finish_reason")
+      .in("turn_id", turnIds)
+      .limit(10000),
+    supabase
+      .from("rankings")
+      .select("response_id, rank, turn_id")
+      .in("turn_id", turnIds)
+      .limit(10000),
+  ]);
+
+  return { turns: turns ?? [], responses: responses ?? [], rankings: rankings ?? [] };
+}
+
 export async function GET(req: NextRequest) {
   try { await requireInternalUser(); } catch (e) { return e as Response; }
 
@@ -28,63 +66,57 @@ export async function GET(req: NextRequest) {
 
   // ── Preference Pairs (JSONL) ────────────────────────────────────────────────
   if (format === "preference_pairs") {
-    const [
-      { data: sessions },
-      { data: turns },
-      { data: responses },
-      { data: rankings },
-    ] = await Promise.all([
-      supabase.from("sessions").select("id, model_ids").eq("is_complete", true),
-      supabase.from("turns").select("id, session_id, turn_number, prompt"),
-      supabase.from("responses").select("id, turn_id, model_id, content"),
-      supabase.from("rankings").select("response_id, rank, turn_id"),
-    ]);
+    const { data: sessions } = await supabase
+      .from("sessions")
+      .select("id, model_ids")
+      .eq("is_complete", true)
+      .limit(5000);
 
     const sessionModelIds: Record<string, string[]> = {};
     (sessions ?? []).forEach(s => { sessionModelIds[s.id] = s.model_ids; });
-    const completedIds = new Set(Object.keys(sessionModelIds));
+    const sessionIds = Object.keys(sessionModelIds);
+
+    const { turns, responses, rankings } = await loadSessionData(supabase, sessionIds);
 
     const lines: string[] = [];
 
-    (turns ?? [])
-      .filter(t => completedIds.has(t.session_id))
-      .forEach(turn => {
-        const turnResponses = (responses ?? []).filter(r => r.turn_id === turn.id);
-        const turnRankings = (rankings ?? []).filter(rk => rk.turn_id === turn.id);
-        if (turnRankings.length < 2) return;
+    turns.forEach(turn => {
+      const turnResponses = responses.filter(r => r.turn_id === turn.id);
+      const turnRankings = rankings.filter(rk => rk.turn_id === turn.id);
+      if (turnRankings.length < 2) return;
 
-        const modelIds = sessionModelIds[turn.session_id] ?? [];
-        const ranked = turnResponses
-          .map(r => ({ ...r, rank: turnRankings.find(rk => rk.response_id === r.id)?.rank ?? null }))
-          .filter(r => r.rank !== null)
-          .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+      const modelIds = sessionModelIds[turn.session_id] ?? [];
+      const ranked = turnResponses
+        .map(r => ({ ...r, rank: turnRankings.find(rk => rk.response_id === r.id)?.rank ?? null }))
+        .filter(r => r.rank !== null)
+        .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
 
-        // All pairwise (chosen > rejected) combinations
-        for (let i = 0; i < ranked.length; i++) {
-          for (let j = i + 1; j < ranked.length; j++) {
-            const chosen = ranked[i];
-            const rejected = ranked[j];
-            lines.push(JSON.stringify({
-              session_id: turn.session_id,
-              turn_number: turn.turn_number,
-              turn_id: turn.id,
-              prompt: turn.prompt,
-              chosen: {
-                slot: SLOTS[modelIds.indexOf(chosen.model_id)] ?? "?",
-                model_id: chosen.model_id,
-                content: chosen.content,
-                rank: chosen.rank,
-              },
-              rejected: {
-                slot: SLOTS[modelIds.indexOf(rejected.model_id)] ?? "?",
-                model_id: rejected.model_id,
-                content: rejected.content,
-                rank: rejected.rank,
-              },
-            }));
-          }
+      // All pairwise (chosen > rejected) combinations
+      for (let i = 0; i < ranked.length; i++) {
+        for (let j = i + 1; j < ranked.length; j++) {
+          const chosen = ranked[i];
+          const rejected = ranked[j];
+          lines.push(JSON.stringify({
+            session_id: turn.session_id,
+            turn_number: turn.turn_number,
+            turn_id: turn.id,
+            prompt: turn.prompt,
+            chosen: {
+              slot: SLOTS[modelIds.indexOf(chosen.model_id)] ?? "?",
+              model_id: chosen.model_id,
+              content: chosen.content,
+              rank: chosen.rank,
+            },
+            rejected: {
+              slot: SLOTS[modelIds.indexOf(rejected.model_id)] ?? "?",
+              model_id: rejected.model_id,
+              content: rejected.content,
+              rank: rejected.rank,
+            },
+          }));
         }
-      });
+      }
+    });
 
     return new Response(lines.join("\n"), {
       headers: {
@@ -96,20 +128,17 @@ export async function GET(req: NextRequest) {
 
   // ── Multi-turn Trajectories (JSON) ──────────────────────────────────────────
   if (format === "trajectories") {
-    const [
-      { data: sessions },
-      { data: turns },
-      { data: responses },
-      { data: rankings },
-    ] = await Promise.all([
-      supabase.from("sessions").select("id, model_ids, created_at, completed_at").eq("is_complete", true),
-      supabase.from("turns").select("id, session_id, turn_number, prompt, ranking_submitted"),
-      supabase.from("responses").select("id, turn_id, model_id, content, token_count, latency_ms, finish_reason"),
-      supabase.from("rankings").select("response_id, rank, turn_id"),
-    ]);
+    const { data: sessions } = await supabase
+      .from("sessions")
+      .select("id, model_ids, created_at, completed_at")
+      .eq("is_complete", true)
+      .limit(5000);
+
+    const sessionIds = (sessions ?? []).map(s => s.id);
+    const { turns, responses, rankings } = await loadSessionData(supabase, sessionIds);
 
     const output = (sessions ?? []).map(session => {
-      const sessionTurns = (turns ?? [])
+      const sessionTurns = turns
         .filter(t => t.session_id === session.id)
         .sort((a, b) => a.turn_number - b.turn_number);
 
@@ -119,8 +148,8 @@ export async function GET(req: NextRequest) {
         created_at: session.created_at,
         completed_at: session.completed_at,
         turns: sessionTurns.map(turn => {
-          const turnResponses = (responses ?? []).filter(r => r.turn_id === turn.id);
-          const turnRankings = (rankings ?? []).filter(rk => rk.turn_id === turn.id);
+          const turnResponses = responses.filter(r => r.turn_id === turn.id);
+          const turnRankings = rankings.filter(rk => rk.turn_id === turn.id);
           return {
             turn_number: turn.turn_number,
             prompt: turn.prompt,
@@ -154,7 +183,8 @@ export async function GET(req: NextRequest) {
     const { data: flags } = await supabase
       .from("behavioral_flags")
       .select("session_id, turn_id, model_id, flag_type, severity, confidence, description, created_at")
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(10000);
 
     const headers = ["session_id", "turn_id", "model_id", "flag_type", "severity", "confidence", "description", "created_at"];
     const rows = (flags ?? []).map(f => [
@@ -182,7 +212,8 @@ export async function GET(req: NextRequest) {
     const { data: profiles } = await supabase
       .from("profiles")
       .select("id, email, is_internal, total_sessions, total_rankings, first_seen_at, last_seen_at")
-      .order("total_sessions", { ascending: false });
+      .order("total_sessions", { ascending: false })
+      .limit(10000);
 
     const headers = [
       "user_id", "email", "is_internal",
