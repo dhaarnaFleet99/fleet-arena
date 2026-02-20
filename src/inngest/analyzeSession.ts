@@ -10,7 +10,7 @@ export const analyzeSessionFn = inngest.createFunction(
     id: "analyze-session",
     retries: 3,
     // Prevent concurrent duplicate runs for the same session
-    concurrency: { limit: 10, key: "event.data.sessionId" },
+    concurrency: { limit: 5, key: "event.data.sessionId" },
   },
   { event: "arena/session.completed" },
   async ({ event, step }) => {
