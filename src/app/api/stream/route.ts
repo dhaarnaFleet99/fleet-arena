@@ -62,23 +62,21 @@ export async function POST(req: NextRequest) {
 
   const slotLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
-  // ── Create response rows before the stream opens ──────────────────────────
+  // ── Create response rows before the stream opens (single bulk insert) ────
   const supabase = createEdgeServiceClient();
   const responseIds: Record<string, string> = {};
-  for (let i = 0; i < modelIds.length; i++) {
-    const { data, error } = await supabase
+  {
+    const { data: insertedRows, error: bulkErr } = await supabase
       .from("responses")
-      .insert({ turn_id: turnId, model_id: modelIds[i], content: "" })
-      .select("id")
-      .single();
-    if (error) {
-      console.error(tag(turnId, slotLabels[i]), "response row insert failed", {
-        model: modelIds[i],
-        code: error.code,
-        detail: error.message,
+      .insert(modelIds.map(modelId => ({ turn_id: turnId, model_id: modelId, content: "" })))
+      .select("id, model_id");
+    if (bulkErr) {
+      console.error(`[stream:${turnId}]`, "bulk response insert failed", {
+        code: bulkErr.code,
+        detail: bulkErr.message,
       });
     }
-    if (data) responseIds[modelIds[i]] = data.id;
+    insertedRows?.forEach(row => { responseIds[row.model_id] = row.id; });
   }
 
   // ── Stream ────────────────────────────────────────────────────────────────

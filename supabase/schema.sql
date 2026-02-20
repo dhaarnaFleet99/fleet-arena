@@ -140,3 +140,27 @@ begin
   where id = uid;
 end;
 $$;
+
+-- ── Performance indexes ───────────────────────────────────────
+create index if not exists sessions_user_id_created_at_idx
+  on sessions(user_id, created_at desc);
+create index if not exists sessions_is_complete_idx
+  on sessions(id) where is_complete = true;
+
+create index if not exists turns_session_id_turn_number_idx
+  on turns(session_id, turn_number);
+
+create index if not exists responses_turn_id_idx
+  on responses(turn_id);
+create index if not exists responses_model_id_idx
+  on responses(model_id);
+
+create index if not exists rankings_turn_id_idx
+  on rankings(turn_id);
+create index if not exists rankings_response_id_idx
+  on rankings(response_id);
+create index if not exists rankings_rank1_idx
+  on rankings(response_id) where rank = 1;
+
+create index if not exists behavioral_flags_session_id_idx
+  on behavioral_flags(session_id);

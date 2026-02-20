@@ -25,14 +25,17 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const INTERNAL_DOMAIN = process.env.INTERNAL_EMAIL_DOMAIN ?? "fleet.so";
 
-  // API routes — return JSON 401/403 instead of redirecting
-  if (path === "/api/stream" || path === "/api/analyze") {
-    if (!user) {
-      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+  // API routes — return JSON 401 instead of redirecting
+  const isProtectedApi =
+    path === "/api/stream" ||
+    path === "/api/analyze" ||
+    path === "/api/rankings" ||
+    path.startsWith("/api/sessions");
+  if (isProtectedApi && !user) {
+    return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   // Internal API routes — must be @fleet.so
@@ -74,6 +77,8 @@ export const config = {
     "/dashboard/:path*", "/history/:path*", "/sessions/:path*",
     "/arena/:path*", "/arena", "/login",
     // API routes that need auth or role checks
-    "/api/stream", "/api/analyze", "/api/internal/:path*",
+    "/api/stream", "/api/analyze", "/api/rankings",
+    "/api/sessions", "/api/sessions/:path*",
+    "/api/internal/:path*",
   ],
 };
