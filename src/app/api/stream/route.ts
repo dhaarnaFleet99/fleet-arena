@@ -3,11 +3,12 @@ import { createEdgeServiceClient } from "@/lib/supabase/edge";
 import { getOpenRouterKey, OPENROUTER_BASE } from "@/lib/openrouter";
 import { checkRateLimit } from "@/lib/rateLimit";
 
-// Run on Vercel's Edge network — purpose-built for long-lived streaming.
-// Concurrency ceiling is ~100k vs ~1k for serverless functions.
-export const runtime = "edge";
+// Node.js serverless runtime with a high maxDuration cap.
+// Edge was tried but its hard 30 s wall-clock limit kills multi-model streams.
+export const dynamic = "force-dynamic";
+export const maxDuration = 300; // Vercel Pro: up to 300 s per streaming function
 
-const MODEL_TIMEOUT_MS = 25_000; // 25 s — stay under Edge's 30 s execution limit
+const MODEL_TIMEOUT_MS = 90_000; // 90 s per model before we abort and emit an error
 const STREAM_MAX_PER_MIN = 20;   // per IP
 
 // Structured log prefix so Vercel logs are greppable by turn.
